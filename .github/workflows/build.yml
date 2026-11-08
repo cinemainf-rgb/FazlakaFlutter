@@ -24,11 +24,24 @@ jobs:
           flutter create . --org com.fazlaka.app --project-name fazlaka
           cp /tmp/main.dart.bak lib/main.dart
           cp /tmp/pubspec.bak pubspec.yaml
-          cat pubspec.yaml
       - run: flutter pub get
       - run: flutter analyze || true
-      - run: flutter build apk --debug --verbose
-      - uses: actions/upload-artifact@v4
+      - name: Build APK
+        run: |
+          flutter build apk --debug > build.log 2>&1 || true
+          echo "===== LAST 80 LINES - THE REAL ERROR IS HERE ====="
+          tail -n 80 build.log
+          echo "===== END ====="
+          if ! grep -q "BUILD SUCCESSFUL" build.log; then exit 1; fi
+      - name: Upload APK
+        if: success()
+        uses: actions/upload-artifact@v4
         with:
           name: fazlaka-flutter-apk-debug
           path: build/app/outputs/flutter-apk/app-debug.apk
+      - name: Upload build log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-log
+          path: build.log
