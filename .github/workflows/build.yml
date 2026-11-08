@@ -14,7 +14,7 @@ jobs:
           java-version: '17'
       - uses: subosito/flutter-action@v2
         with:
-          flutter-version: '3.24.5'
+          flutter-version: '3.19.6'
           channel: 'stable'
           cache: true
       - name: Create Flutter project structure
@@ -26,10 +26,9 @@ jobs:
           cp /tmp/pubspec.bak pubspec.yaml
           flutter pub add crypto shared_preferences path_provider share_plus
       - run: flutter pub get
-      - run: flutter doctor -v
       - run: flutter analyze || true
-      - run: flutter build apk --release --verbose
+      - run: flutter build apk --debug
       - uses: actions/upload-artifact@v4
         with:
-          name: fazlaka-flutter-apk
-          path: build/app/outputs/flutter-apk/app-release.apk
+          name: fazlaka-flutter-apk-debug
+          path: build/app/outputs/flutter-apk/app-debug.apk
