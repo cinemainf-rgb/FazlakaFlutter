@@ -12,6 +12,14 @@ jobs:
         with:
           flutter-version: '3.22.0'
           channel: 'stable'
+      - name: Create Flutter project structure
+        run: |
+          cp lib/main.dart /tmp/main.dart.bak
+          cp pubspec.yaml /tmp/pubspec.bak
+          flutter create . --org com.fazlaka.app --project-name fazlaka
+          cp /tmp/main.dart.bak lib/main.dart
+          cp /tmp/pubspec.bak pubspec.yaml
+          flutter pub add crypto shared_preferences path_provider share_plus
       - run: flutter pub get
       - run: flutter build apk --release
       - uses: actions/upload-artifact@v4
