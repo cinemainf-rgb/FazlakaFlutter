@@ -25,15 +25,26 @@ jobs:
           cp /tmp/main.dart.bak lib/main.dart
           cp /tmp/pubspec.bak pubspec.yaml
           echo "Fixing Kotlin version..."
-          sed -i "s/ext.kotlin_version = '.*'/ext.kotlin_version = '1.9.22'/" android/build.gradle
-          cat android/build.gradle | grep -i kotlin
+          sed -i 's/1.9.0/1.9.22/g' android/settings.gradle || true
+          sed -i "s/ext.kotlin_version = '.*'/ext.kotlin_version = '1.9.22'/" android/build.gradle || true
+          cat >> android/app/build.gradle <<'EOF'
+
+          configurations.all {
+            resolutionStrategy {
+              force 'org.jetbrains.kotlin:kotlin-stdlib:1.9.22'
+              force 'org.jetbrains.kotlin:kotlin-stdlib-jdk7:1.9.22'
+              force 'org.jetbrains.kotlin:kotlin-stdlib-jdk8:1.9.22'
+            }
+          }
+          EOF
+          echo "Kotlin fix done"
       - run: flutter pub get
       - run: flutter analyze || true
       - name: Build APK
         run: |
           flutter build apk --debug > build.log 2>&1 || true
           echo "===== THE REAL ERROR ====="
-          grep -E -i -A 25 "FAILURE|What went wrong|A problem occurred|Could not|Exception|error:" build.log | head -n 80
+          grep -E -i -A 25 "FAILURE|What went wrong|A problem occurred|Could not|Exception|error:" build.log | head -n 80 || true
           echo "===== END ====="
           ls -lh build/app/outputs/flutter-apk/app-debug.apk || exit 1
       - name: Upload APK
