@@ -27,7 +27,7 @@ jobs:
           cat pubspec.yaml
       - run: flutter pub get
       - run: flutter analyze || true
-      - run: flutter build apk --debug --stacktrace
+      - run: flutter build apk --debug --verbose
       - uses: actions/upload-artifact@v4
         with:
           name: fazlaka-flutter-apk-debug
