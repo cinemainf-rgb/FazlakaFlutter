@@ -29,8 +29,8 @@ jobs:
       - name: Build APK
         run: |
           flutter build apk --debug > build.log 2>&1 || true
-          echo "===== LAST 80 LINES - THE REAL ERROR IS HERE ====="
-          tail -n 80 build.log
+          echo "===== THE REAL ERROR ====="
+          grep -A 25 "FAILURE: Build failed|What went wrong|A problem occurred|Could not|error:" build.log | head -n 60
           echo "===== END ====="
           if ! grep -q "BUILD SUCCESSFUL" build.log; then exit 1; fi
       - name: Upload APK
