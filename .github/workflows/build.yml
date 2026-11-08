@@ -14,7 +14,7 @@ jobs:
           java-version: '17'
       - uses: subosito/flutter-action@v2
         with:
-          flutter-version: '3.22.0'
+          flutter-version: '3.24.0'
           channel: 'stable'
           cache: true
       - name: Create Flutter project structure
@@ -24,6 +24,9 @@ jobs:
           flutter create . --org com.fazlaka.app --project-name fazlaka
           cp /tmp/main.dart.bak lib/main.dart
           cp /tmp/pubspec.bak pubspec.yaml
+          echo "Fixing Kotlin version..."
+          sed -i "s/ext.kotlin_version = '.*'/ext.kotlin_version = '1.9.22'/" android/build.gradle
+          cat android/build.gradle | grep -i kotlin
       - run: flutter pub get
       - run: flutter analyze || true
       - name: Build APK
