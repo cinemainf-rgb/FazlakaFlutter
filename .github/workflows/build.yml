@@ -30,9 +30,9 @@ jobs:
         run: |
           flutter build apk --debug > build.log 2>&1 || true
           echo "===== THE REAL ERROR ====="
-          grep -A 25 "FAILURE: Build failed|What went wrong|A problem occurred|Could not|error:" build.log | head -n 60
+          grep -E -i -A 25 "FAILURE|What went wrong|A problem occurred|Could not|Exception|error:" build.log | head -n 80
           echo "===== END ====="
-          if ! grep -q "BUILD SUCCESSFUL" build.log; then exit 1; fi
+          ls -lh build/app/outputs/flutter-apk/app-debug.apk || exit 1
       - name: Upload APK
         if: success()
         uses: actions/upload-artifact@v4
