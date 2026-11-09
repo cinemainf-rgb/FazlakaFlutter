@@ -17,38 +17,15 @@ jobs:
           mkdir -p /tmp/save
           cp lib/main.dart /tmp/save/main.dart
           cp pubspec.yaml /tmp/save/pubspec.yaml
+          cp android/app/src/main/AndroidManifest.xml /tmp/save/AndroidManifest.xml || echo "no manifest file"
       - name: Create Android folder
         run: flutter create .
-      - name: Restore our files + Write Manifest with Bluetooth permissions
+      - name: Restore our files
         run: |
           cp /tmp/save/main.dart lib/main.dart
           cp /tmp/save/pubspec.yaml pubspec.yaml
-          cat > android/app/src/main/AndroidManifest.xml << 'EOF'
-          <manifest xmlns:android="http://schemas.android.com/apk/res/android">
-              <uses-permission android:name="android.permission.INTERNET" />
-              <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
-              <uses-permission android:name="android.permission.BLUETOOTH" />
-              <uses-permission android:name="android.permission.BLUETOOTH_ADMIN" />
-              <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
-              <uses-permission android:name="android.permission.BLUETOOTH_SCAN" />
-              <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
-              <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
-              <uses-feature android:name="android.hardware.bluetooth" android:required="false" />
-              <application android:label="Fazlaka" android:name="${applicationName}" android:icon="@mipmap/ic_launcher">
-                  <activity android:name=".MainActivity" android:exported="true" android:launchMode="singleTop" android:theme="@style/LaunchTheme" android:configChanges="orientation|keyboardHidden|keyboard|screenSize|smallestScreen|locale|layoutDirection|fontScale|screenLayout|density|uiMode" android:hardwareAccelerated="true" android:windowSoftInputMode="adjustResize">
-                      <meta-data android:name="io.flutter.embedding.android.NormalTheme" android:resource="@style/NormalTheme" />
-                      <intent-filter>
-                          <action android:name="android.intent.action.MAIN"/>
-                          <category android:name="android.intent.category.LAUNCHER"/>
-                      </intent-filter>
-                  </activity>
-                  <meta-data android:name="flutterEmbedding" android:value="2" />
-              </application>
-          </manifest>
-          EOF
+          if [ -f /tmp/save/AndroidManifest.xml ]; then cp /tmp/save/AndroidManifest.xml android/app/src/main/AndroidManifest.xml; fi
           flutter pub get
-      - name: Check for Dart errors
-        run: flutter analyze || true
       - name: Build APK
         run: flutter build apk --debug
       - name: Upload APK
