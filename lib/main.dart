@@ -26,7 +26,6 @@ class FazlakaApp extends StatelessWidget {
   }
 }
 
-// ===== MikroTik API =====
 class Mikrotik {
   Socket? sock;
   List<int> buf = [];
@@ -128,7 +127,6 @@ final packages = {
   'Package 100 - 20GB - 30 Days': {'profile': 'profile_100_2GB', 'price': '100', 'quota': 20, 'days': 30},
 };
 
-// ===== Card متظبط - مفيش حاجة تطلع بره =====
 Widget fCard({required Widget child}) {
   return Container(
     width: double.infinity,
@@ -149,8 +147,14 @@ Widget cardTitle(IconData icon, String title) {
     Text(title, style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Colors.white)),
   ]);
 }
+String formatBytes(String? v) {
+  if (v == null || v.isEmpty) return '0 MB';
+  double b = double.tryParse(v) ?? 0;
+  if (b >= 1024*1024*1024) return '${(b/(1024*1024*1024)).toStringAsFixed(2)} GB';
+  if (b >= 1024*1024) return '${(b/(1024*1024)).toStringAsFixed(1)} MB';
+  return '${(b/1024).toStringAsFixed(0)} KB';
+}
 
-// ===== LOGIN =====
 class LoginScreen extends StatefulWidget {
   const LoginScreen({super.key});
   @override State<LoginScreen> createState() => _LoginState();
@@ -184,7 +188,7 @@ class _LoginState extends State<LoginScreen> {
       }
       var res = await mk.query(['/system/resource/print']);
       var active = await mk.query(['/ip/hotspot/active/print']);
-      var users = await mk.query(['/ip/hotspot/user/print']);
+      var users = await mk.query(['/ip/hotspot/user/print', '=detail=']);
       mk.close();
       if (!mounted) return;
       Navigator.pushReplacement(context, MaterialPageRoute(builder: (_) => MainScreen(ip: ipC.text.trim(), user: userC.text.trim(), pass: passC.text, routerInfo: res.isNotEmpty ? res[0] : {}, activeCount: active.length, usersCount: users.length)));
@@ -247,7 +251,6 @@ class _LoginState extends State<LoginScreen> {
   }
 }
 
-// ===== MAIN =====
 class MainScreen extends StatefulWidget {
   final String ip, user, pass;
   final Map<String,String> routerInfo;
@@ -257,14 +260,46 @@ class MainScreen extends StatefulWidget {
 }
 class _MainState extends State<MainScreen> {
   String selected = 'Package 20 - 2GB - 3 Days';
-  int count = 10;
+  int count = 1;
   String result = '';
   List<String> lastCards = [];
   Map<String,dynamic>? lastInfo;
   double totalSales = 0;
   double totalExp = 0;
+  int totalCardsSold = 0;
+  bool isGenerating = false;
   final expAmountC = TextEditingController();
   final expReasonC = TextEditingController();
+
+  @override void initState() { super.initState(); _loadAccounts(); }
+  Future<void> _loadAccounts() async {
+    var p = await SharedPreferences.getInstance();
+    setState(() {
+      totalSales = p.getDouble('totalSales') ?? 0;
+      totalExp = p.getDouble('totalExp') ?? 0;
+      totalCardsSold = p.getInt('totalCardsSold') ?? 0;
+      lastCards = p.getStringList('lastCards') ?? [];
+      String? pkgName = p.getString('lastPkg');
+      if (pkgName != null && packages.containsKey(pkgName)) lastInfo = packages[pkgName];
+    });
+  }
+  Future<void> _saveAccounts() async {
+    var p = await SharedPreferences.getInstance();
+    await p.setDouble('totalSales', totalSales);
+    await p.setDouble('totalExp', totalExp);
+    await p.setInt('totalCardsSold', totalCardsSold);
+    await p.setStringList('lastCards', lastCards);
+    if (lastInfo != null) {
+      String key = packages.entries.firstWhere((e) => e.value == lastInfo).key;
+      await p.setString('lastPkg', key);
+    }
+  }
+  Future<void> _resetAccounts() async {
+    bool ok = await showDialog(context: context, builder: (c) => AlertDialog(backgroundColor: cardBg, title: const Text('Reset Accounts?'), content: const Text('This will clear Sales, Expenses and Cards counter. Are you sure?'), actions: [TextButton(onPressed: () => Navigator.pop(c, false), child: const Text('Cancel')), TextButton(onPressed: () => Navigator.pop(c, true), child: const Text('Reset', style: TextStyle(color: Colors.redAccent)))])) ?? false;
+    if (!ok) return;
+    setState(() { totalSales = 0; totalExp = 0; totalCardsSold = 0; lastCards = []; });
+    await _saveAccounts();
+  }
 
   Widget smallBox(String title, String value, IconData icon) {
     return Expanded(child: Container(
@@ -279,7 +314,8 @@ class _MainState extends State<MainScreen> {
     ));
   }
   Future<void> _generate() async {
-    setState(() => result = 'Generating...');
+    if (isGenerating) return;
+    setState(() { isGenerating = true; result = 'Generating...'; });
     try {
       var pkg = packages[selected]!;
       var mk = Mikrotik(); await mk.connect(widget.ip, widget.user, widget.pass);
@@ -298,8 +334,9 @@ class _MainState extends State<MainScreen> {
       }
       mk.close();
       double price = double.tryParse(pkg['price'].toString()) ?? 0;
-      setState(() { lastCards = created; lastInfo = pkg; totalSales += price * created.length; result = 'Done! ${created.length}/$count Cards - ${pkg['quota']}GB - ${pkg['days']} Days'; });
-    } catch (e) { setState(() => result = 'Error: $e'); }
+      setState(() { lastCards = created; lastInfo = pkg; totalSales += price * created.length; totalCardsSold += created.length; result = 'Done! ${created.length}/$count Cards - ${pkg['quota']}GB - ${pkg['days']} Days - Saved!'; isGenerating = false; });
+      await _saveAccounts();
+    } catch (e) { setState(() { result = 'Error: $e'; isGenerating = false; }); }
   }
   Future<void> _print({bool isTest = false}) async {
     try {
@@ -319,7 +356,6 @@ class _MainState extends State<MainScreen> {
       setState(() => result = 'Saved - Choose RawBT to Print');
     } catch (e) { setState(() => result = 'Print Error: $e'); }
   }
-
   @override Widget build(BuildContext context) {
     var pkg = packages[selected]!;
     double net = totalSales - totalExp;
@@ -333,7 +369,6 @@ class _MainState extends State<MainScreen> {
             const Icon(Icons.notifications_outlined, color: Colors.white, size: 26),
           ]),
           const SizedBox(height: 14),
-          // Card 1 - Router
           fCard(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
             Row(children: [
               Expanded(child: cardTitle(Icons.router, 'Router Status')),
@@ -347,16 +382,22 @@ class _MainState extends State<MainScreen> {
             ]),
             const SizedBox(height: 8),
             Row(children: [const Icon(Icons.access_time, size: 16, color: Colors.white54), const SizedBox(width: 6), Expanded(child: Text('Uptime: ${widget.routerInfo['uptime'] ?? '-'}  |  Router: ${widget.routerInfo['board-name'] ?? 'x86'}', style: const TextStyle(color: Colors.white70, fontSize: 13)))]),
+            const SizedBox(height: 14),
+            Row(children: [
+              Expanded(child: ElevatedButton.icon(onPressed: () => Navigator.push(context, MaterialPageRoute(builder: (_) => ActiveScreen(ip: widget.ip, user: widget.user, pass: widget.pass))), icon: const Icon(Icons.wifi, size: 18, color: Colors.black), label: const Text('Active Users', style: TextStyle(color: Colors.black, fontWeight: FontWeight.bold)), style: ElevatedButton.styleFrom(backgroundColor: turq, shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)), padding: const EdgeInsets.symmetric(vertical: 12)))),
+              const SizedBox(width: 10),
+              Expanded(child: ElevatedButton.icon(onPressed: () => Navigator.push(context, MaterialPageRoute(builder: (_) => UsersScreen(ip: widget.ip, user: widget.user, pass: widget.pass))), icon: const Icon(Icons.people, size: 18, color: Colors.white), label: const Text('All Users', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)), style: ElevatedButton.styleFrom(backgroundColor: Colors.white12, shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)), padding: const EdgeInsets.symmetric(vertical: 12)))),
+            ]),
           ])),
           const SizedBox(height: 14),
-          // Card 2 - Profile
           fCard(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
             cardTitle(Icons.person_outline, 'Profile'),
             const SizedBox(height: 12),
-            Container(padding: const EdgeInsets.symmetric(horizontal: 12), decoration: BoxDecoration(color: innerBg, borderRadius: BorderRadius.circular(14), border: Border.all(color: turq.withOpacity(0.35))), child: DropdownButtonHideUnderline(child: DropdownButton<String>(value: selected, isExpanded: true, dropdownColor: cardBg, icon: const Icon(Icons.keyboard_arrow_down, color: Colors.white), style: const TextStyle(color: Colors.white, fontSize: 15), items: packages.keys.map((k) => DropdownMenuItem(value: k, child: Text(k))).toList(), onChanged: (v) => setState(() => selected = v!)))),
+            Container(padding: const EdgeInsets.symmetric(horizontal: 12), decoration: BoxDecoration(color: innerBg, borderRadius: BorderRadius.circular(14), border: Border.all(color: turq, width: 1.5)), child: DropdownButtonHideUnderline(child: DropdownButton<String>(value: selected, isExpanded: true, dropdownColor: cardBg, icon: const Icon(Icons.keyboard_arrow_down, color: turq), style: const TextStyle(color: Colors.white, fontSize: 15, fontWeight: FontWeight.bold), items: packages.keys.map((k) => DropdownMenuItem(value: k, child: Row(children: [if (k == selected) const Icon(Icons.check_circle, color: turq, size: 18), if (k == selected) const SizedBox(width: 8), Text(k)]))).toList(), onChanged: (v) { if (v != null) setState(() { selected = v; result = 'Selected: $v'; }); }))),
+            const SizedBox(height: 10),
+            Container(width: double.infinity, padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10), decoration: BoxDecoration(color: turq.withOpacity(0.12), borderRadius: BorderRadius.circular(12), border: Border.all(color: turq.withOpacity(0.4))), child: Text('Selected: $selected', style: const TextStyle(color: turq, fontWeight: FontWeight.bold, fontSize: 14))),
           ])),
           const SizedBox(height: 14),
-          // Card 3 - Generate
           fCard(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
             cardTitle(Icons.credit_card, 'Generate Cards'),
             const SizedBox(height: 14),
@@ -380,7 +421,7 @@ class _MainState extends State<MainScreen> {
           ])),
           const SizedBox(height: 16),
           if (result.isNotEmpty) Padding(padding: const EdgeInsets.only(bottom: 8), child: Text(result, textAlign: TextAlign.center, style: const TextStyle(color: turq, fontWeight: FontWeight.bold))),
-          Container(width: double.infinity, height: 56, decoration: BoxDecoration(gradient: const LinearGradient(colors: [Color(0xFF00E5D4), Color(0xFF00B8FF)]), borderRadius: BorderRadius.circular(28), boxShadow: [BoxShadow(color: turq.withOpacity(0.45), blurRadius: 18, offset: const Offset(0, 8))]), child: ElevatedButton(onPressed: _generate, style: ElevatedButton.styleFrom(backgroundColor: Colors.transparent, shadowColor: Colors.transparent, shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(28))), child: const Row(mainAxisAlignment: MainAxisAlignment.center, children: [Icon(Icons.credit_card, color: Colors.black), SizedBox(width: 8), Text('Generate Cards', style: TextStyle(fontSize: 18, fontWeight: FontWeight.w900, color: Colors.black))]))),
+          Container(width: double.infinity, height: 56, decoration: BoxDecoration(gradient: const LinearGradient(colors: [Color(0xFF00E5D4), Color(0xFF00B8FF)]), borderRadius: BorderRadius.circular(28), boxShadow: [BoxShadow(color: turq.withOpacity(0.45), blurRadius: 18, offset: const Offset(0, 8))]), child: ElevatedButton(onPressed: isGenerating ? null : _generate, style: ElevatedButton.styleFrom(backgroundColor: Colors.transparent, shadowColor: Colors.transparent, shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(28))), child: Row(mainAxisAlignment: MainAxisAlignment.center, children: [if (isGenerating) const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(color: Colors.black, strokeWidth: 2)) else const Icon(Icons.credit_card, color: Colors.black), const SizedBox(width: 8), Text(isGenerating ? 'Generating...' : 'Generate Cards', style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w900, color: Colors.black))]))),
           const SizedBox(height: 12),
           Container(width: double.infinity, height: 56, decoration: BoxDecoration(gradient: const LinearGradient(colors: [Color(0xFFFFA500), Color(0xFFFF6B00)]), borderRadius: BorderRadius.circular(28), boxShadow: [BoxShadow(color: Colors.orange.withOpacity(0.4), blurRadius: 18, offset: const Offset(0, 8))]), child: ElevatedButton(onPressed: () => _print(), style: ElevatedButton.styleFrom(backgroundColor: Colors.transparent, shadowColor: Colors.transparent, shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(28))), child: const Row(mainAxisAlignment: MainAxisAlignment.center, children: [Icon(Icons.print, color: Colors.white), SizedBox(width: 8), Text('Print - RazyTech', style: TextStyle(fontSize: 18, fontWeight: FontWeight.w900, color: Colors.white))]))),
           const SizedBox(height: 12),
@@ -390,10 +431,11 @@ class _MainState extends State<MainScreen> {
             Expanded(child: OutlinedButton(onPressed: () => _print(isTest: true), style: OutlinedButton.styleFrom(side: const BorderSide(color: Colors.white24), shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)), padding: const EdgeInsets.symmetric(vertical: 13)), child: const Text('Test Printer', style: TextStyle(color: Colors.white)))),
           ]),
           const SizedBox(height: 14),
-          // Card 4 - Accounts - جوه كارت لوحده، مش طالع بره
           fCard(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-            cardTitle(Icons.account_balance_wallet_outlined, 'Accounts'),
-            const SizedBox(height: 14),
+            Row(children: [Expanded(child: cardTitle(Icons.account_balance_wallet_outlined, 'Accounts')), TextButton(onPressed: _resetAccounts, child: const Text('Reset', style: TextStyle(color: Colors.redAccent, fontSize: 13)))]),
+            const SizedBox(height: 4),
+            Text('Total Cards Sold: $totalCardsSold', style: const TextStyle(color: Colors.white70, fontSize: 13)),
+            const SizedBox(height: 10),
             Row(children: [
               Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [const Text('Sales', style: TextStyle(color: Colors.white54, fontSize: 12)), Text('$totalSales EGP', style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Colors.green))])),
               Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [const Text('Expenses', style: TextStyle(color: Colors.white54, fontSize: 12)), Text('$totalExp EGP', style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Colors.redAccent))])),
@@ -406,14 +448,117 @@ class _MainState extends State<MainScreen> {
               Expanded(child: TextField(controller: expReasonC, style: const TextStyle(color: Colors.white), decoration: InputDecoration(hintText: 'Reason', hintStyle: const TextStyle(color: Colors.white38), filled: true, fillColor: innerBg, border: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: BorderSide.none)))),
             ]),
             const SizedBox(height: 10),
-            SizedBox(width: double.infinity, height: 46, child: ElevatedButton(onPressed: () {
+            SizedBox(width: double.infinity, height: 46, child: ElevatedButton(onPressed: () async {
               double v = double.tryParse(expAmountC.text) ?? 0;
-              if (v > 0) { setState(() { totalExp += v; expAmountC.clear(); expReasonC.clear(); }); }
+              if (v > 0) { setState(() { totalExp += v; expAmountC.clear(); expReasonC.clear(); }); await _saveAccounts(); }
             }, style: ElevatedButton.styleFrom(backgroundColor: Colors.redAccent, shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14))), child: const Text('Add Expense', style: TextStyle(fontWeight: FontWeight.bold)))),
+            const SizedBox(height: 8),
+            const Text('Accounts are saved. Closing the app will NOT reset them.', style: TextStyle(color: Colors.white38, fontSize: 12)),
           ])),
           const SizedBox(height: 20),
         ]))),
       ),
+    );
+  }
+}
+
+class ActiveScreen extends StatefulWidget {
+  final String ip, user, pass;
+  const ActiveScreen({super.key, required this.ip, required this.user, required this.pass});
+  @override State<ActiveScreen> createState() => _ActiveState();
+}
+class _ActiveState extends State<ActiveScreen> {
+  List<Map<String,String>> items = [];
+  bool loading = true;
+  String error = '';
+  @override void initState() { super.initState(); _load(); }
+  Future<void> _load() async {
+    setState(() { loading = true; error = ''; });
+    try {
+      var mk = Mikrotik(); await mk.connect(widget.ip, widget.user, widget.pass);
+      var res = await mk.query(['/ip/hotspot/active/print']);
+      mk.close();
+      setState(() { items = res; loading = false; });
+    } catch (e) { setState(() { loading = false; error = '$e'; }); }
+  }
+  @override Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: petrolBg,
+      appBar: AppBar(backgroundColor: petrolBg, title: Text('Active Users (${items.length})', style: const TextStyle(color: turq, fontWeight: FontWeight.bold)), leading: IconButton(icon: const Icon(Icons.arrow_back, color: Colors.white), onPressed: () => Navigator.pop(context)), actions: [IconButton(icon: const Icon(Icons.refresh, color: Colors.white), onPressed: _load)]),
+      body: loading ? const Center(child: CircularProgressIndicator(color: turq)) : error.isNotEmpty ? Center(child: Text(error, style: const TextStyle(color: Colors.redAccent))) : items.isEmpty ? const Center(child: Text('No Active Users', style: TextStyle(color: Colors.white54, fontSize: 18))) : ListView.builder(padding: const EdgeInsets.all(16), itemCount: items.length, itemBuilder: (c, i) {
+        var it = items[i];
+        return Container(margin: const EdgeInsets.only(bottom: 12), padding: const EdgeInsets.all(14), decoration: BoxDecoration(color: cardBg, borderRadius: BorderRadius.circular(16), border: Border.all(color: turq.withOpacity(0.3))), child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          Row(children: [Container(padding: const EdgeInsets.all(8), decoration: BoxDecoration(color: Colors.green.withOpacity(0.15), borderRadius: BorderRadius.circular(10)), child: const Icon(Icons.wifi, color: Colors.green, size: 20)), const SizedBox(width: 10), Expanded(child: Text(it['user'] ?? '-', style: const TextStyle(fontSize: 20, fontWeight: FontWeight.bold))), Container(padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4), decoration: BoxDecoration(color: Colors.green.withOpacity(0.15), borderRadius: BorderRadius.circular(10)), child: const Text('ONLINE', style: TextStyle(color: Colors.green, fontSize: 11, fontWeight: FontWeight.bold)))]),
+          const SizedBox(height: 10),
+          Text('IP: ${it['address'] ?? '-'}  |  MAC: ${it['mac-address'] ?? '-'}', style: const TextStyle(color: Colors.white70)),
+          const SizedBox(height: 6),
+          Text('Uptime: ${it['uptime'] ?? '-'}  |  Session: ${it['session-time-left'] ?? '-'}', style: const TextStyle(color: Colors.white70)),
+          const SizedBox(height: 6),
+          Text('Download: ${formatBytes(it['bytes-out'])}  |  Upload: ${formatBytes(it['bytes-in'])}', style: const TextStyle(color: turq, fontWeight: FontWeight.bold)),
+        ]));
+      }),
+    );
+  }
+}
+
+class UsersScreen extends StatefulWidget {
+  final String ip, user, pass;
+  const UsersScreen({super.key, required this.ip, required this.user, required this.pass});
+  @override State<UsersScreen> createState() => _UsersState();
+}
+class _UsersState extends State<UsersScreen> {
+  List<Map<String,String>> items = [];
+  List<Map<String,String>> filtered = [];
+  bool loading = true;
+  String error = '';
+  final searchC = TextEditingController();
+  @override void initState() { super.initState(); _load(); }
+  Future<void> _load() async {
+    setState(() { loading = true; error = ''; });
+    try {
+      var mk = Mikrotik(); await mk.connect(widget.ip, widget.user, widget.pass);
+      var res = await mk.query(['/ip/hotspot/user/print', '=detail=']);
+      mk.close();
+      setState(() { items = res; filtered = res; loading = false; });
+    } catch (e) { setState(() { loading = false; error = '$e'; }); }
+  }
+  void _search(String q) {
+    setState(() { filtered = q.isEmpty ? items : items.where((e) => (e['name'] ?? '').contains(q)).toList(); });
+  }
+  Future<void> _delete(String id, String name) async {
+    bool ok = await showDialog(context: context, builder: (c) => AlertDialog(backgroundColor: cardBg, title: const Text('Delete User?'), content: Text('Delete card $name ?'), actions: [TextButton(onPressed: () => Navigator.pop(c, false), child: const Text('Cancel')), TextButton(onPressed: () => Navigator.pop(c, true), child: const Text('Delete', style: TextStyle(color: Colors.redAccent)))])) ?? false;
+    if (!ok) return;
+    try {
+      var mk = Mikrotik(); await mk.connect(widget.ip, widget.user, widget.pass);
+      await mk.query(['/ip/hotspot/user/remove', '=numbers=$id']);
+      mk.close();
+      _load();
+    } catch (e) { if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Error: $e'))); }
+  }
+  @override Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: petrolBg,
+      appBar: AppBar(backgroundColor: petrolBg, title: Text('All Users (${filtered.length}/${items.length})', style: const TextStyle(color: turq, fontWeight: FontWeight.bold)), leading: IconButton(icon: const Icon(Icons.arrow_back, color: Colors.white), onPressed: () => Navigator.pop(context)), actions: [IconButton(icon: const Icon(Icons.refresh, color: Colors.white), onPressed: _load)]),
+      body: Column(children: [
+        Padding(padding: const EdgeInsets.all(16), child: TextField(controller: searchC, onChanged: _search, style: const TextStyle(color: Colors.white), decoration: InputDecoration(hintText: 'Search by card number...', hintStyle: const TextStyle(color: Colors.white38), prefixIcon: const Icon(Icons.search, color: turq), filled: true, fillColor: cardBg, border: OutlineInputBorder(borderRadius: BorderRadius.circular(14), borderSide: BorderSide.none)))),
+        Expanded(child: loading ? const Center(child: CircularProgressIndicator(color: turq)) : error.isNotEmpty ? Center(child: Text(error, style: const TextStyle(color: Colors.redAccent))) : filtered.isEmpty ? const Center(child: Text('No Users', style: TextStyle(color: Colors.white54))) : ListView.builder(padding: const EdgeInsets.symmetric(horizontal: 16), itemCount: filtered.length, itemBuilder: (c, i) {
+          var it = filtered[i];
+          bool disabled = it['disabled'] == 'true';
+          return Container(margin: const EdgeInsets.only(bottom: 10), padding: const EdgeInsets.all(14), decoration: BoxDecoration(color: cardBg, borderRadius: BorderRadius.circular(16), border: Border.all(color: turq.withOpacity(0.3))), child: Row(children: [
+            Container(padding: const EdgeInsets.all(8), decoration: BoxDecoration(color: turq.withOpacity(0.15), borderRadius: BorderRadius.circular(10)), child: const Icon(Icons.credit_card, color: turq, size: 20)),
+            const SizedBox(width: 10),
+            Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              Text(it['name'] ?? '-', style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+              const SizedBox(height: 4),
+              Text('Profile: ${it['profile'] ?? '-'}', style: const TextStyle(color: Colors.white70, fontSize: 13)),
+              Text('Uptime: ${it['uptime'] ?? '0s'}  |  Limit: ${it['limit-uptime'] ?? '-'}', style: const TextStyle(color: Colors.white54, fontSize: 12)),
+              Text('Used: ${formatBytes(it['bytes-total'])} / ${formatBytes(it['limit-bytes-total'])}', style: const TextStyle(color: Colors.white54, fontSize: 12)),
+            ])),
+            if (disabled) const Text('OFF', style: TextStyle(color: Colors.redAccent, fontWeight: FontWeight.bold)),
+            IconButton(icon: const Icon(Icons.delete, color: Colors.redAccent, size: 20), onPressed: () => _delete(it['.id'] ?? '', it['name'] ?? '')),
+          ]));
+        })),
+      ]),
     );
   }
 }
