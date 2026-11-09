@@ -1,48 +1,836 @@
-import 'dart:async';import 'dart:convert';import 'dart:io';import 'dart:math';import 'dart:typed_data';import 'dart:ui' as ui;
-import 'package:flutter/material.dart';import 'package:shared_preferences/shared_preferences.dart';import 'package:share_plus/share_plus.dart';import 'package:path_provider/path_provider.dart';import 'package:crypto/crypto.dart';
-void main(){runApp(const MaterialApp(home:LoginScreen(),debugShowCheckedModeBanner:false));}
-class Pkg{final String name,profile;final int price,quotaGB,days;Pkg(this.name,this.profile,this.price,this.quotaGB,this.days);}
-final packages=[Pkg('باقة 20', '20', 20, 2, 3),Pkg('باقة 50','50',50,8,7),Pkg('باقة 100','100',100,20,30)];
-class MikrotikApi{Socket? s;
-Future<void> connect(String h,int p)async{s=await Socket.connect(h,p,timeout:const Duration(seconds:5));}
-void wWord(String w){final b=utf8.encode(w);final l=b.length;if(l<0x80)s!.add([l]);else if(l<0x4000)s!.add([(l>>8)|0x80,l&0xFF]);else s!.add([(l>>16)|0xC0,(l>>8)&0xFF,l&0xFF]);s!.add(b);}
-void wSen(List<String> ws){for(final w in ws)wWord(w);s!.add([0x00]);}
-Future<List<Map<String,String>>> readSen()async{final c=Completer<List<Map<String,String>>>();final out=<Map<String,String>>[];var cur=<String,String>{};var buf=<int>[];StreamSubscription? sub;
-sub=s!.listen((d){buf.addAll(d);int i=0;while(i<buf.length){int len=buf[i];i++;if(len==0){if(cur.isNotEmpty)out.add(Map.from(cur));cur={};continue;}if(len&0x80!=0){if(i>=buf.length)break;len=((len&0x7F)<<8)|buf[i];i++;}if(i+len>buf.length)break;final word=utf8.decode(buf.sublist(i,i+len),allowMalformed:true);i+=len;
-if(word=='!done'||word=='!re'||word=='!trap'||word=='!fatal'){if(word!='!re'){if(cur.isNotEmpty)out.add(Map.from(cur));cur={};}if(word=='!done'){if(!c.isCompleted){c.complete(out);sub?.cancel();}}}else if(word.startsWith('=')){final eq=word.indexOf('=',1);if(eq>0)cur[word.substring(1,eq)]=word.substring(eq+1);}}buf=buf.sublist(i);},onError:(e){if(!c.isCompleted)c.completeError(e);},onDone:(){if(!c.isCompleted)c.complete(out);});
-return c.future.timeout(const Duration(seconds:8),onTimeout:()=>out);}
-Future<void> login(String u,String p)async{wSen(['/login','=name=$u','=password=$p']);var r=await readSen();String? ret;for(var m in r)if(m.containsKey('ret'))ret=m['ret'];
-if(ret!=null){final chal=<int>[];for(int i=0;i<ret.length;i+=2)chal.add(int.parse(ret.substring(i,i+2),radix:16));final pass=md5.convert(utf8.encode(p)).bytes;final List<int> data=<int>[];data.add(0x00);data.addAll(chal);data.addAll(pass);final h='00'+md5.convert(data).toString();wSen(['/login','=name=$u','=response=$h']);await readSen();}}
-Future<List<Map<String,String>>> cmd(List<String> ws)async{wSen(ws);return readSen();}
-void disconnect(){try{s?.destroy();}catch(_){}s=null;}}
-class LoginScreen extends StatefulWidget{const LoginScreen({super.key});@override State<LoginScreen> createState()=>_Login();}
-class _Login extends State<LoginScreen>{final ip=TextEditingController(text:'10.10.10.1');final user=TextEditingController(text:'admin');final pass=TextEditingController(text:'asdf4411');String st='';bool busy=false;
-@override Widget build(BuildContext context){return Directionality(textDirection:TextDirection.rtl,child:Scaffold(backgroundColor:const Color(0xFFEFF3F4),appBar:AppBar(title:const Text('Fazlaka'),backgroundColor:Colors.white,foregroundColor:Colors.black),body:Padding(padding:const EdgeInsets.all(16),child:Column(children:[
-TextField(controller:ip,decoration:const InputDecoration(labelText:'IP الراوتر',border:OutlineInputBorder(),filled:true,fillColor:Colors.white)),const SizedBox(height:10),
-TextField(controller:user,decoration:const InputDecoration(labelText:'اسم المستخدم',border:OutlineInputBorder(),filled:true,fillColor:Colors.white)),const SizedBox(height:10),
-TextField(controller:pass,obscureText:true,decoration:const InputDecoration(labelText:'كلمة السر',border:OutlineInputBorder(),filled:true,fillColor:Colors.white)),const SizedBox(height:16),
-SizedBox(width:double.infinity,child:ElevatedButton(onPressed:busy?null:()async{setState(()=>busy=true);try{final api=MikrotikApi();await api.connect(ip.text.trim(),8728);await api.login(user.text.trim(),pass.text.trim());if(!mounted)return;Navigator.pushReplacement(context,MaterialPageRoute(builder:(_)=>HomeScreen(api:api)));}catch(e){setState(()=>st='خطأ: $e');}setState(()=>busy=false);},style:ElevatedButton.styleFrom(backgroundColor:const Color(0xFF009688),foregroundColor:Colors.white,padding:const EdgeInsets.symmetric(vertical:16),shape:RoundedRectangleBorder(borderRadius:BorderRadius.circular(30))),child:const Text('دخول',style:TextStyle(fontSize:18,fontWeight:FontWeight.bold)))),
-const SizedBox(height:12),Text(st,style:const TextStyle(color:Colors.red))]))));}}
-class HomeScreen extends StatefulWidget{final MikrotikApi api;const HomeScreen({super.key,required this.api});@override State<HomeScreen> createState()=>_Home();}
-class _Home extends State<HomeScreen>{int selPkg=0;int count=1;List<String> generated=[];int activeCount=0,usersCount=0,todayCards=0,todaySales=0,expenses=0;String status='';bool busy=false;
-String rand7(){final r=Random();String s='';for(int i=0;i<7;i++)s+=r.nextInt(10).toString();return s;}
-@override void initState(){super.initState();_load();_refresh();}
-Future<void> _load()async{final p=await SharedPreferences.getInstance();setState((){todayCards=p.getInt('today_cards')??0;todaySales=p.getInt('today_sales')??0;expenses=p.getInt('expenses')??0;});}
-Future<void> _save()async{final p=await SharedPreferences.getInstance();await p.setInt('today_cards',todayCards);await p.setInt('today_sales',todaySales);await p.setInt('expenses',expenses);}
-Future<void> _refresh()async{try{final a=await widget.api.cmd(['/ppp/active/print']);final u=await widget.api.cmd(['/ip/hotspot/user/print']);setState((){activeCount=a.length;usersCount=u.length;});}catch(_){}}
-Future<void> _generate()async{setState(()=>busy=true);try{final pkg=packages[selPkg];List<String> nc=[];for(int i=0;i<count;i++){String n=rand7();await widget.api.cmd(['/ip/hotspot/user/add','=name=$n','=password=$n','=profile=${pkg.profile}',' =limit-bytes-total=${pkg.quotaGB*1024*1024*1024}']);nc.add(n);}generated=nc;todayCards+=nc.length;todaySales+=nc.length*pkg.price;await _save();await _refresh();setState(()=>status='تم توليد ${nc.length} كارت');if(mounted)_showPreview();}catch(e){setState(()=>status='خطأ: $e');}setState(()=>busy=false);}
-Future<Uint8List> cardBytes(String num,Pkg pkg)async{final rec=ui.PictureRecorder();final cv=Canvas(rec);const w=576.0,h=380.0;cv.drawRect(Rect.fromLTWH(0,0,w,h),Paint()..color=Colors.white);
-void txt(String s,double y,double size,{FontWeight fw=FontWeight.normal}){final tp=TextPainter(text:TextSpan(text:s,style:TextStyle(fontSize:size,fontWeight:fw,color:Colors.black,fontFamily:'monospace')),textDirection:TextDirection.ltr)..layout(maxWidth:w);tp.paint(cv,Offset((w-tp.width)/2,y));}
-txt('FAZLAKA',10,48,fw:FontWeight.w900);txt('01016620065 - 01141418040',75,26);final p=Paint()..color=Colors.black..style=PaintingStyle.stroke..strokeWidth=2;for(double x=20;x<w-20;x+=12)cv.drawLine(Offset(x,115),Offset(x+6,115),p);
-txt(num,135,110,fw:FontWeight.w900);txt('Price: ${pkg.price} | Quota: ${pkg.quotaGB}GB',270,30,fw:FontWeight.bold);final pic=rec.endRecording();final img=await pic.toImage(w.toInt(),h.toInt());final bd=await img.toByteData(format:ui.ImageByteFormat.png);return bd!.buffer.asUint8List();}
-Future<List<int>> toEscPos(Uint8List png)async{final c=ui.PictureRecorder();final cv=Canvas(c);final codec=await ui.instantiateImageCodec(png);final fr=await codec.getNextFrame();final img=fr.image;cv.drawImage(img,Offset.zero,Paint());final pic=c.endRecording();final im=await pic.toImage(576,380);final bd=await im.toByteData(format:ui.ImageByteFormat.rawRgba);final bytes=bd!.buffer.asUint8List();
-List<int> out=[0x1B,0x40,0x1B,0x33,0x00];for(int y=0;y<380;y+=24){out.addAll([0x1B,0x2A,0x21,0x48,0x02]);for(int x=0;x<576;x++){for(int k=0;k<3;k++){int b=0;for(int b2=0;b2<8;b2++){int yy=y+k*8+b2;int idx=(yy*576+x)*4;int gray=(bytes[idx]+bytes[idx+1]+bytes[idx+2])~/3;if(yy<380&&gray<128)b|=(1<<(7-b2));}out.add(b);}}out.addAll([0x0A]);}out.addAll([0x0A,0x0A,0x0A,0x1D,0x56,0x00]);return out;}
-void _showPreview(){if(generated.isEmpty)return;showDialog(context:context,barrierDismissible:false,builder:(_)=>AlertDialog(title:const Text('الكارت جاهز - اطبع؟',textAlign:TextAlign.center),content:Column(mainAxisSize:MainAxisSize.min,children:[FutureBuilder<Uint8List>(future:cardBytes(generated.first,packages[selPkg]),builder:(_,s)=>s.hasData?Image.memory(s.data!,width:300):const SizedBox(height:150,child:Center(child:CircularProgressIndicator()))),const SizedBox(height:8),Text('الباقة: ${packages[selPkg].name}'),Text('عدد الكروت: ${generated.length} | الاجمالي: ${generated.length*packages[selPkg].price} جنيه')]),actions:[TextButton(onPressed:()=>Navigator.pop(context),child:const Text('الغاء')),ElevatedButton.icon(onPressed:()async{Navigator.pop(context);await _print();},icon:const Icon(Icons.print),label:const Text('اطبع'),style:ElevatedButton.styleFrom(backgroundColor:Colors.orange,foregroundColor:Colors.white))])));}
-Future<void> _print()async{if(generated.isEmpty)return;setState(()=>busy=true);try{final dir=await getTemporaryDirectory();final f=File('${dir.path}/fazlaka_cards.prn');List<int> all=[];for(final c in generated)all.addAll(await toEscPos(await cardBytes(c,packages[selPkg])));await f.writeAsBytes(all);await Share.shareXFiles([XFile(f.path)],text:'Fazlaka Cards - افتح في RawBT واطبع');}catch(e){if(mounted)ScaffoldMessenger.of(context).showSnackBar(SnackBar(content:Text('خطأ: $e')));}setState(()=>busy=false);}
-Future<void> _showList(String t,String cmd)async{try{var r=await widget.api.cmd([cmd]);if(!mounted)return;showDialog(context:context,builder:(_)=>AlertDialog(title:Text(t),content:SizedBox(width:double.maxFinite,height:400,child:ListView(children:r.map((m)=>ListTile(title:Text(m['name']??m['user']??m.toString()),subtitle:Text(m.toString()))).toList())),actions:[TextButton(onPressed:()=>Navigator.pop(context),child:const Text('اغلاق'))]));}catch(e){ScaffoldMessenger.of(context).showSnackBar(SnackBar(content:Text('$e')));}}
-Widget stat(String l,String v,VoidCallback t)=>GestureDetector(onTap:t,child:Container(padding:const EdgeInsets.all(14),decoration:BoxDecoration(color:Colors.white,borderRadius:BorderRadius.circular(14)),child:Column(children:[Text(l,style:const TextStyle(fontWeight:FontWeight.bold)),Text(v,style:const TextStyle(fontSize:22,fontWeight:FontWeight.bold))])));
-@override Widget build(BuildContext context){final pkg=packages[selPkg];return Directionality(textDirection:TextDirection.rtl,child:Scaffold(backgroundColor:const Color(0xFFEFF3F4),appBar:AppBar(title:const Text('Fazlaka'),backgroundColor:Colors.white,foregroundColor:Colors.black,actions:[IconButton(icon:const Icon(Icons.refresh),onPressed:_refresh)]),body:SingleChildScrollView(padding:const EdgeInsets.all(14),child:Column(children:[
-Row(children:[Expanded(child:stat('Active','$activeCount',()=>_showList('Active Users','/ppp/active/print'))),const SizedBox(width:10),Expanded(child:stat('Users','$usersCount',()=>_showList('All Users','/ip/hotspot/user/print')))]),
-const SizedBox(height:12),Container(padding:const EdgeInsets.all(16),decoration:BoxDecoration(color:Colors.white,borderRadius:BorderRadius.circular(18)),child:Column(children:[Row(mainAxisAlignment:MainAxisAlignment.spaceBetween,children:[const Text('النهاردة',style:TextStyle(fontWeight:FontWeight.bold)),Text('$todayCards كارت - $todaySales جنيه',style:const TextStyle(fontWeight:FontWeight.bold,color:Color(0xFF009688)))]),const Divider(),Row(mainAxisAlignment:MainAxisAlignment.spaceAround,children:[Text('مبيعات $todaySales'),Text('مصاريف $expenses'),Text('صافي ${todaySales-expenses}')])])),
-const SizedBox(height:12),Container(padding:const EdgeInsets.all(16),decoration:BoxDecoration(color:Colors.white,borderRadius:BorderRadius.circular(18)),child:Column(crossAxisAlignment:CrossAxisAlignment.stretch,children:[const Text('الباقة - اختر الباقة',style:TextStyle(fontSize:18,fontWeight:FontWeight.bold)),const SizedBox(height:12),...List.generate(packages.length,(i){final p=packages[i];final sel=i==selPkg;return GestureDetector(onTap:()=>setState(()=>selPkg=i),child:Container(margin:const EdgeInsets.only(bottom:10),padding:const EdgeInsets.all(14),decoration:BoxDecoration(color:sel?const Color(0xFF009688):const Color(0xFFF5F5F5),borderRadius:BorderRadius.circular(14)),child:Row(children:[Icon(sel?Icons.check_circle:Icons.radio_button_unchecked,color:sel?Colors.white:Colors.grey),const Spacer(),Column(crossAxisAlignment:CrossAxisAlignment.end,children:[Text(p.name,style:TextStyle(fontSize:17,fontWeight:FontWeight.bold,color:sel?Colors.white:Colors.black)),Text('${p.price} جنيه | ${p.quotaGB} جيجا | ${p.days} أيام',style:TextStyle(color:sel?Colors.white70:Colors.grey))])])));} ) ])),
-const SizedBox(height:12),Container(padding:const EdgeInsets.all(16),decoration:BoxDecoration(color:Colors.white,borderRadius:BorderRadius.circular(18)),child:Column(crossAxisAlignment:CrossAxisAlignment.stretch,children:[Text('الباقة المختارة: ${pkg.name} - ${pkg.price} جنيه | ${pkg.quotaGB} جيجا | ${pkg.days} أيام',style:const TextStyle(fontWeight:FontWeight.bold)),const SizedBox(height:12),Row(children:[const Text('عدد الكروت: '),Expanded(child:TextField(keyboardType:TextInputType.number,onChanged:(v)=>count=int.tryParse(v)??1,decoration:const InputDecoration(hintText:'1',border:OutlineInputBorder())))]),const SizedBox(height:12),SizedBox(width:double.infinity,child:ElevatedButton(onPressed:busy?null:_generate,style:ElevatedButton.styleFrom(backgroundColor:const Color(0xFF009688),foregroundColor:Colors.white,padding:const EdgeInsets.symmetric(vertical:16),shape:RoundedRectangleBorder(borderRadius:BorderRadius.circular(30))),child:const Text('توليد واظهار الكارت',style:TextStyle(fontSize:18,fontWeight:FontWeight.bold)))),const SizedBox(height:8),Text(status,textAlign:TextAlign.center),if(generated.isNotEmpty)Container(margin:const EdgeInsets.only(top:10),padding:const EdgeInsets.all(12),decoration:BoxDecoration(color:const Color(0xFFEFF3F4),borderRadius:BorderRadius.circular(12)),child:Column(crossAxisAlignment:CrossAxisAlignment.start,children:[const Text('Generated Cards:',style:TextStyle(fontWeight:FontWeight.bold)),...generated.map((g)=>Text(g,style:const TextStyle(fontFamily:'monospace',fontSize:16))).toList(),const SizedBox(height:10),SizedBox(width:double.infinity,child:ElevatedButton(onPressed:busy?null:_print,style:ElevatedButton.styleFrom(backgroundColor:Colors.orange,foregroundColor:Colors.white,padding:const EdgeInsets.symmetric(vertical:14),shape:RoundedRectangleBorder(borderRadius:BorderRadius.circular(30))),child:const Text('طباعة',style:TextStyle(fontSize:17,fontWeight:FontWeight.bold))))]))]))]))));}}
+import 'dart:async';
+import 'dart:convert';
+import 'dart:io';
+import 'dart:math';
+import 'dart:typed_data';
+import 'dart:ui' as ui;
+import 'package:flutter/material.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+import 'package:share_plus/share_plus.dart';
+import 'package:path_provider/path_provider.dart';
+import 'package:crypto/crypto.dart';
+
+void main() {
+  runApp(const MaterialApp(
+    home: LoginScreen(),
+    debugShowCheckedModeBanner: false,
+  ));
+}
+
+class Pkg {
+  final String name;
+  final String profile;
+  final int price;
+  final int quotaGB;
+  final int days;
+  Pkg(this.name, this.profile, this.price, this.quotaGB, this.days);
+}
+
+final packages = [
+  Pkg('باقة 20', '20', 20, 2, 3),
+  Pkg('باقة 50', '50', 50, 8, 7),
+  Pkg('باقة 100', '100', 100, 20, 30),
+];
+
+class MikrotikApi {
+  Socket? s;
+
+  Future<void> connect(String h, int p) async {
+    s = await Socket.connect(h, p, timeout: const Duration(seconds: 5));
+  }
+
+  void wWord(String w) {
+    final b = utf8.encode(w);
+    final l = b.length;
+    if (l < 0x80) {
+      s!.add([l]);
+    } else if (l < 0x4000) {
+      s!.add([(l >> 8) | 0x80, l & 0xFF]);
+    } else {
+      s!.add([(l >> 16) | 0xC0, (l >> 8) & 0xFF, l & 0xFF]);
+    }
+    s!.add(b);
+  }
+
+  void wSen(List<String> ws) {
+    for (final w in ws) {
+      wWord(w);
+    }
+    s!.add([0x00]);
+  }
+
+  Future<List<Map<String, String>>> readSen() async {
+    final c = Completer<List<Map<String, String>>>();
+    final out = <Map<String, String>>[];
+    var cur = <String, String>{};
+    var buf = <int>[];
+    StreamSubscription? sub;
+    sub = s!.listen((d) {
+      buf.addAll(d);
+      int i = 0;
+      while (i < buf.length) {
+        int len = buf[i];
+        i++;
+        if (len == 0) {
+          if (cur.isNotEmpty) out.add(Map.from(cur));
+          cur = {};
+          continue;
+        }
+        if (len & 0x80 != 0) {
+          if (i >= buf.length) break;
+          len = ((len & 0x7F) << 8) | buf[i];
+          i++;
+        }
+        if (i + len > buf.length) break;
+        final word = utf8.decode(
+          buf.sublist(i, i + len),
+          allowMalformed: true,
+        );
+        i += len;
+        if (word == '!done' ||
+            word == '!re' ||
+            word == '!trap' ||
+            word == '!fatal') {
+          if (word != '!re') {
+            if (cur.isNotEmpty) out.add(Map.from(cur));
+            cur = {};
+          }
+          if (word == '!done') {
+            if (!c.isCompleted) {
+              c.complete(out);
+              sub?.cancel();
+            }
+          }
+        } else if (word.startsWith('=')) {
+          final eq = word.indexOf('=', 1);
+          if (eq > 0) {
+            cur[word.substring(1, eq)] = word.substring(eq + 1);
+          }
+        }
+      }
+      buf = buf.sublist(i);
+    }, onError: (e) {
+      if (!c.isCompleted) c.completeError(e);
+    }, onDone: () {
+      if (!c.isCompleted) c.complete(out);
+    });
+    return c.future.timeout(
+      const Duration(seconds: 8),
+      onTimeout: () => out,
+    );
+  }
+
+  Future<void> login(String u, String p) async {
+    wSen(['/login', '=name=$u', '=password=$p']);
+    var r = await readSen();
+    String? ret;
+    for (var m in r) {
+      if (m.containsKey('ret')) ret = m['ret'];
+    }
+    if (ret != null) {
+      final chal = <int>[];
+      for (int i = 0; i < ret.length; i += 2) {
+        chal.add(int.parse(ret.substring(i, i + 2), radix: 16));
+      }
+      final pass = md5.convert(utf8.encode(p)).bytes;
+      final List<int> data = <int>[];
+      data.add(0x00);
+      data.addAll(chal);
+      data.addAll(pass);
+      final h = '00' + md5.convert(data).toString();
+      wSen(['/login', '=name=$u', '=response=$h']);
+      await readSen();
+    }
+  }
+
+  Future<List<Map<String, String>>> cmd(List<String> ws) async {
+    wSen(ws);
+    return readSen();
+  }
+
+  void disconnect() {
+    try {
+      s?.destroy();
+    } catch (_) {}
+    s = null;
+  }
+}
+
+class LoginScreen extends StatefulWidget {
+  const LoginScreen({super.key});
+  @override
+  State<LoginScreen> createState() => _Login();
+}
+
+class _Login extends State<LoginScreen> {
+  final ip = TextEditingController(text: '10.10.10.1');
+  final user = TextEditingController(text: 'admin');
+  final pass = TextEditingController(text: 'asdf4411');
+  String st = '';
+  bool busy = false;
+
+  @override
+  Widget build(BuildContext context) {
+    return Directionality(
+      textDirection: TextDirection.rtl,
+      child: Scaffold(
+        backgroundColor: const Color(0xFFEFF3F4),
+        appBar: AppBar(
+          title: const Text('Fazlaka'),
+          backgroundColor: Colors.white,
+          foregroundColor: Colors.black,
+        ),
+        body: Padding(
+          padding: const EdgeInsets.all(16),
+          child: Column(
+            children: [
+              TextField(
+                controller: ip,
+                decoration: const InputDecoration(
+                  labelText: 'IP الراوتر',
+                  border: OutlineInputBorder(),
+                  filled: true,
+                  fillColor: Colors.white,
+                ),
+              ),
+              const SizedBox(height: 10),
+              TextField(
+                controller: user,
+                decoration: const InputDecoration(
+                  labelText: 'اسم المستخدم',
+                  border: OutlineInputBorder(),
+                  filled: true,
+                  fillColor: Colors.white,
+                ),
+              ),
+              const SizedBox(height: 10),
+              TextField(
+                controller: pass,
+                obscureText: true,
+                decoration: const InputDecoration(
+                  labelText: 'كلمة السر',
+                  border: OutlineInputBorder(),
+                  filled: true,
+                  fillColor: Colors.white,
+                ),
+              ),
+              const SizedBox(height: 16),
+              SizedBox(
+                width: double.infinity,
+                child: ElevatedButton(
+                  onPressed: busy
+                      ? null
+                      : () async {
+                          setState(() => busy = true);
+                          try {
+                            final api = MikrotikApi();
+                            await api.connect(ip.text.trim(), 8728);
+                            await api.login(
+                              user.text.trim(),
+                              pass.text.trim(),
+                            );
+                            if (!mounted) return;
+                            Navigator.pushReplacement(
+                              context,
+                              MaterialPageRoute(
+                                builder: (_) => HomeScreen(api: api),
+                              ),
+                            );
+                          } catch (e) {
+                            setState(() => st = 'خطأ: $e');
+                          }
+                          setState(() => busy = false);
+                        },
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: const Color(0xFF009688),
+                    foregroundColor: Colors.white,
+                    padding: const EdgeInsets.symmetric(vertical: 16),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(30),
+                    ),
+                  ),
+                  child: const Text(
+                    'دخول',
+                    style: TextStyle(
+                      fontSize: 18,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                ),
+              ),
+              const SizedBox(height: 12),
+              Text(st, style: const TextStyle(color: Colors.red)),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class HomeScreen extends StatefulWidget {
+  final MikrotikApi api;
+  const HomeScreen({super.key, required this.api});
+  @override
+  State<HomeScreen> createState() => _Home();
+}
+
+class _Home extends State<HomeScreen> {
+  int selPkg = 0;
+  int count = 1;
+  List<String> generated = [];
+  int activeCount = 0;
+  int usersCount = 0;
+  int todayCards = 0;
+  int todaySales = 0;
+  int expenses = 0;
+  String status = '';
+  bool busy = false;
+
+  String rand7() {
+    final r = Random();
+    String s = '';
+    for (int i = 0; i < 7; i++) {
+      s += r.nextInt(10).toString();
+    }
+    return s;
+  }
+
+  @override
+  void initState() {
+    super.initState();
+    _load();
+    _refresh();
+  }
+
+  Future<void> _load() async {
+    final p = await SharedPreferences.getInstance();
+    setState(() {
+      todayCards = p.getInt('today_cards') ?? 0;
+      todaySales = p.getInt('today_sales') ?? 0;
+      expenses = p.getInt('expenses') ?? 0;
+    });
+  }
+
+  Future<void> _save() async {
+    final p = await SharedPreferences.getInstance();
+    await p.setInt('today_cards', todayCards);
+    await p.setInt('today_sales', todaySales);
+    await p.setInt('expenses', expenses);
+  }
+
+  Future<void> _refresh() async {
+    try {
+      final a = await widget.api.cmd(['/ppp/active/print']);
+      final u = await widget.api.cmd(['/ip/hotspot/user/print']);
+      setState(() {
+        activeCount = a.length;
+        usersCount = u.length;
+      });
+    } catch (_) {}
+  }
+
+  Future<void> _generate() async {
+    setState(() => busy = true);
+    try {
+      final pkg = packages[selPkg];
+      List<String> nc = [];
+      for (int i = 0; i < count; i++) {
+        String n = rand7();
+        await widget.api.cmd([
+          '/ip/hotspot/user/add',
+          '=name=$n',
+          '=password=$n',
+          '=profile=${pkg.profile}',
+          '=limit-uptime=${pkg.days}d',
+          '=limit-bytes-total=${pkg.quotaGB * 1024 * 1024 * 1024}',
+        ]);
+        nc.add(n);
+      }
+      generated = nc;
+      todayCards += nc.length;
+      todaySales += nc.length * pkg.price;
+      await _save();
+      await _refresh();
+      setState(() => status = 'تم توليد ${nc.length} كارت');
+      if (mounted) _showPreview();
+    } catch (e) {
+      setState(() => status = 'خطأ: $e');
+    }
+    setState(() => busy = false);
+  }
+
+  Future<Uint8List> cardBytes(String num, Pkg pkg) async {
+    final rec = ui.PictureRecorder();
+    final cv = Canvas(rec);
+    const w = 576.0;
+    const h = 380.0;
+    cv.drawRect(
+      const Rect.fromLTWH(0, 0, w, h),
+      Paint()..color = Colors.white,
+    );
+    void txt(String s, double y, double size,
+        {FontWeight fw = FontWeight.normal}) {
+      final tp = TextPainter(
+        text: TextSpan(
+          text: s,
+          style: TextStyle(
+            fontSize: size,
+            fontWeight: fw,
+            color: Colors.black,
+            fontFamily: 'monospace',
+          ),
+        ),
+        textDirection: TextDirection.ltr,
+      )..layout(maxWidth: w);
+      tp.paint(cv, Offset((w - tp.width) / 2, y));
+    }
+
+    txt('FAZLAKA', 10, 48, fw: FontWeight.w900);
+    txt('01016620065 - 01141418040', 75, 26);
+    final p = Paint()
+      ..color = Colors.black
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 2;
+    for (double x = 20; x < w - 20; x += 12) {
+      cv.drawLine(Offset(x, 115), Offset(x + 6, 115), p);
+    }
+    txt(num, 135, 110, fw: FontWeight.w900);
+    txt('Price: ${pkg.price} | Quota: ${pkg.quotaGB}GB', 270, 30,
+        fw: FontWeight.bold);
+    final pic = rec.endRecording();
+    final img = await pic.toImage(w.toInt(), h.toInt());
+    final bd = await img.toByteData(format: ui.ImageByteFormat.png);
+    return bd!.buffer.asUint8List();
+  }
+
+  Future<List<int>> toEscPos(Uint8List png) async {
+    final c = ui.PictureRecorder();
+    final cv = Canvas(c);
+    final codec = await ui.instantiateImageCodec(png);
+    final fr = await codec.getNextFrame();
+    final img = fr.image;
+    cv.drawImage(img, Offset.zero, Paint());
+    final pic = c.endRecording();
+    final im = await pic.toImage(576, 380);
+    final bd = await im.toByteData(format: ui.ImageByteFormat.rawRgba);
+    final bytes = bd!.buffer.asUint8List();
+    List<int> out = [0x1B, 0x40, 0x1B, 0x33, 0x00];
+    for (int y = 0; y < 380; y += 24) {
+      out.addAll([0x1B, 0x2A, 0x21, 0x48, 0x02]);
+      for (int x = 0; x < 576; x++) {
+        for (int k = 0; k < 3; k++) {
+          int b = 0;
+          for (int b2 = 0; b2 < 8; b2++) {
+            int yy = y + k * 8 + b2;
+            int idx = (yy * 576 + x) * 4;
+            int gray = (bytes[idx] + bytes[idx + 1] + bytes[idx + 2]) ~/ 3;
+            if (yy < 380 && gray < 128) b |= (1 << (7 - b2));
+          }
+          out.add(b);
+        }
+      }
+      out.addAll([0x0A]);
+    }
+    out.addAll([0x0A, 0x0A, 0x0A, 0x1D, 0x56, 0x00]);
+    return out;
+  }
+
+  void _showPreview() {
+    if (generated.isEmpty) return;
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (_) => AlertDialog(
+        title: const Text(
+          'الكارت جاهز - اطبع؟',
+          textAlign: TextAlign.center,
+        ),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            FutureBuilder<Uint8List>(
+              future: cardBytes(generated.first, packages[selPkg]),
+              builder: (_, s) => s.hasData
+                  ? Image.memory(s.data!, width: 300)
+                  : const SizedBox(
+                      height: 150,
+                      child: Center(child: CircularProgressIndicator()),
+                    ),
+            ),
+            const SizedBox(height: 8),
+            Text('الباقة: ${packages[selPkg].name}'),
+            Text(
+              'عدد الكروت: ${generated.length} | الاجمالي: ${generated.length * packages[selPkg].price} جنيه',
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('الغاء'),
+          ),
+          ElevatedButton.icon(
+            onPressed: () async {
+              Navigator.pop(context);
+              await _print();
+            },
+            icon: const Icon(Icons.print),
+            label: const Text('اطبع'),
+            style: ElevatedButton.styleFrom(
+              backgroundColor: Colors.orange,
+              foregroundColor: Colors.white,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _print() async {
+    if (generated.isEmpty) return;
+    setState(() => busy = true);
+    try {
+      final dir = await getTemporaryDirectory();
+      final f = File('${dir.path}/fazlaka_cards.prn');
+      List<int> all = [];
+      for (final c in generated) {
+        all.addAll(await toEscPos(await cardBytes(c, packages[selPkg])));
+      }
+      await f.writeAsBytes(all);
+      await Share.shareXFiles(
+        [XFile(f.path)],
+        text: 'Fazlaka Cards - افتح في RawBT واطبع',
+      );
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('خطأ: $e')),
+        );
+      }
+    }
+    setState(() => busy = false);
+  }
+
+  Future<void> _showList(String t, String cmd) async {
+    try {
+      var r = await widget.api.cmd([cmd]);
+      if (!mounted) return;
+      showDialog(
+        context: context,
+        builder: (_) => AlertDialog(
+          title: Text(t),
+          content: SizedBox(
+            width: double.maxFinite,
+            height: 400,
+            child: ListView(
+              children: r
+                  .map(
+                    (m) => ListTile(
+                      title: Text(m['name'] ?? m['user'] ?? m.toString()),
+                      subtitle: Text(m.toString()),
+                    ),
+                  )
+                  .toList(),
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text('اغلاق'),
+            ),
+          ],
+        ),
+      );
+    } catch (e) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('$e')),
+      );
+    }
+  }
+
+  Widget stat(String l, String v, VoidCallback t) {
+    return GestureDetector(
+      onTap: t,
+      child: Container(
+        padding: const EdgeInsets.all(14),
+        decoration: BoxDecoration(
+          color: Colors.white,
+          borderRadius: BorderRadius.circular(14),
+        ),
+        child: Column(
+          children: [
+            Text(l, style: const TextStyle(fontWeight: FontWeight.bold)),
+            Text(
+              v,
+              style: const TextStyle(fontSize: 22, fontWeight: FontWeight.bold),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final pkg = packages[selPkg];
+    return Directionality(
+      textDirection: TextDirection.rtl,
+      child: Scaffold(
+        backgroundColor: const Color(0xFFEFF3F4),
+        appBar: AppBar(
+          title: const Text('Fazlaka'),
+          backgroundColor: Colors.white,
+          foregroundColor: Colors.black,
+          actions: [
+            IconButton(
+              icon: const Icon(Icons.refresh),
+              onPressed: _refresh,
+            ),
+          ],
+        ),
+        body: SingleChildScrollView(
+          padding: const EdgeInsets.all(14),
+          child: Column(
+            children: [
+              Row(
+                children: [
+                  Expanded(
+                    child: stat(
+                      'Active',
+                      '$activeCount',
+                      () => _showList('Active Users', '/ppp/active/print'),
+                    ),
+                  ),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: stat(
+                      'Users',
+                      '$usersCount',
+                      () => _showList('All Users', '/ip/hotspot/user/print'),
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 12),
+              Container(
+                padding: const EdgeInsets.all(16),
+                decoration: BoxDecoration(
+                  color: Colors.white,
+                  borderRadius: BorderRadius.circular(18),
+                ),
+                child: Column(
+                  children: [
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        const Text(
+                          'النهاردة',
+                          style: TextStyle(fontWeight: FontWeight.bold),
+                        ),
+                        Text(
+                          '$todayCards كارت - $todaySales جنيه',
+                          style: const TextStyle(
+                            fontWeight: FontWeight.bold,
+                            color: Color(0xFF009688),
+                          ),
+                        ),
+                      ],
+                    ),
+                    const Divider(),
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceAround,
+                      children: [
+                        Text('مبيعات $todaySales'),
+                        Text('مصاريف $expenses'),
+                        Text('صافي ${todaySales - expenses}'),
+                      ],
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 12),
+              Container(
+                padding: const EdgeInsets.all(16),
+                decoration: BoxDecoration(
+                  color: Colors.white,
+                  borderRadius: BorderRadius.circular(18),
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    const Text(
+                      'الباقة - اختر الباقة',
+                      style: TextStyle(
+                        fontSize: 18,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                    const SizedBox(height: 12),
+                    ...List.generate(packages.length, (i) {
+                      final p = packages[i];
+                      final sel = i == selPkg;
+                      return GestureDetector(
+                        onTap: () => setState(() => selPkg = i),
+                        child: Container(
+                          margin: const EdgeInsets.only(bottom: 10),
+                          padding: const EdgeInsets.all(14),
+                          decoration: BoxDecoration(
+                            color: sel
+                                ? const Color(0xFF009688)
+                                : const Color(0xFFF5F5F5),
+                            borderRadius: BorderRadius.circular(14),
+                          ),
+                          child: Row(
+                            children: [
+                              Icon(
+                                sel
+                                    ? Icons.check_circle
+                                    : Icons.radio_button_unchecked,
+                                color: sel ? Colors.white : Colors.grey,
+                              ),
+                              const Spacer(),
+                              Column(
+                                crossAxisAlignment: CrossAxisAlignment.end,
+                                children: [
+                                  Text(
+                                    p.name,
+                                    style: TextStyle(
+                                      fontSize: 17,
+                                      fontWeight: FontWeight.bold,
+                                      color: sel ? Colors.white : Colors.black,
+                                    ),
+                                  ),
+                                  Text(
+                                    '${p.price} جنيه | ${p.quotaGB} جيجا | ${p.days} أيام',
+                                    style: TextStyle(
+                                      color: sel
+                                          ? Colors.white70
+                                          : Colors.grey,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ],
+                          ),
+                        ),
+                      );
+                    }),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 12),
+              Container(
+                padding: const EdgeInsets.all(16),
+                decoration: BoxDecoration(
+                  color: Colors.white,
+                  borderRadius: BorderRadius.circular(18),
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    Text(
+                      'الباقة المختارة: ${pkg.name} - ${pkg.price} جنيه | ${pkg.quotaGB} جيجا | ${pkg.days} أيام',
+                      style: const TextStyle(fontWeight: FontWeight.bold),
+                    ),
+                    const SizedBox(height: 12),
+                    Row(
+                      children: [
+                        const Text('عدد الكروت: '),
+                        Expanded(
+                          child: TextField(
+                            keyboardType: TextInputType.number,
+                            onChanged: (v) => count = int.tryParse(v) ?? 1,
+                            decoration: const InputDecoration(
+                              hintText: '1',
+                              border: OutlineInputBorder(),
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 12),
+                    SizedBox(
+                      width: double.infinity,
+                      child: ElevatedButton(
+                        onPressed: busy ? null : _generate,
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: const Color(0xFF009688),
+                          foregroundColor: Colors.white,
+                          padding: const EdgeInsets.symmetric(vertical: 16),
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(30),
+                          ),
+                        ),
+                        child: const Text(
+                          'توليد واظهار الكارت',
+                          style: TextStyle(
+                            fontSize: 18,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+                    Text(status, textAlign: TextAlign.center),
+                    if (generated.isNotEmpty)
+                      Container(
+                        margin: const EdgeInsets.only(top: 10),
+                        padding: const EdgeInsets.all(12),
+                        decoration: BoxDecoration(
+                          color: const Color(0xFFEFF3F4),
+                          borderRadius: BorderRadius.circular(12),
+                        ),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            const Text(
+                              'Generated Cards:',
+                              style: TextStyle(fontWeight: FontWeight.bold),
+                            ),
+                            ...generated.map(
+                              (g) => Text(
+                                g,
+                                style: const TextStyle(
+                                  fontFamily: 'monospace',
+                                  fontSize: 16,
+                                ),
+                              ),
+                            ).toList(),
+                            const SizedBox(height: 10),
+                            SizedBox(
+                              width: double.infinity,
+                              child: ElevatedButton(
+                                onPressed: busy ? null : _print,
+                                style: ElevatedButton.styleFrom(
+                                  backgroundColor: Colors.orange,
+                                  foregroundColor: Colors.white,
+                                  padding: const EdgeInsets.symmetric(
+                                    vertical: 14,
+                                  ),
+                                  shape: RoundedRectangleBorder(
+                                    borderRadius: BorderRadius.circular(30),
+                                  ),
+                                ),
+                                child: const Text(
+                                  'طباعة',
+                                  style: TextStyle(
+                                    fontSize: 17,
+                                    fontWeight: FontWeight.bold,
+                                  ),
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
