@@ -10,12 +10,13 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:share_plus/share_plus.dart';
+import 'package:blue_thermal_printer/blue_thermal_printer.dart';
 import 'package:path_provider/path_provider.dart';
 
 void main() { runApp(const FazlakaApp()); }
 
 // الراوتر: 10.10.10.1 - admin / asdf4411 - API 8728
-// الطابعة: RazyTech-5890IV - Share -> RawBT - .prn
+// الطابعة: بلوتوث مباشر - من غير وسيط
 // الافتراضي: قالب الفنادق - انت اللي بتصمم بعد كده
 
 class Package {
@@ -64,6 +65,7 @@ class MikrotikApi {
     sub = _sock!.listen((data){ buf.addAll(data); int i=0; while(i<buf.length){ int len=buf[i]; i++; if(len==0){ if(cur.isNotEmpty) out.add(Map.from(cur)); cur={}; continue; } if(len & 0x80 !=0){ if(i>=buf.length) break; len=((len&0x7F)<<8)|buf[i]; i++; } if(i+len>buf.length) break; final word=utf8.decode(buf.sublist(i,i+len), allowMalformed:true); i+=len; if(word=='!done'||word=='!re'||word=='!trap'||word=='!fatal'){ if(word!='!re'){ if(cur.isNotEmpty) out.add(Map.from(cur)); cur={}; } if(word=='!done'){ if(!completer.isCompleted){ completer.complete(out); sub?.cancel(); } } } else if(word.startsWith('=')){ final eq=word.indexOf('=',1); if(eq>0) cur[word.substring(1,eq)]=word.substring(eq+1); } } buf=buf.sublist(i); }, onError:(e){ if(!completer.isCompleted) completer.completeError(e); }, onDone:(){ if(!completer.isCompleted) completer.complete(out); });
     return completer.future.timeout(const Duration(seconds:8), onTimeout:()=>out);
   }
+  void disconnect(){ try{ _sock?.destroy(); }catch(_){} _sock=null; }
   Future<void> login(String user,String pass) async { _writeSentence(['/login','=name=$user','=password=$pass']); var res=await _readSentence(); String? ret; for(var m in res) if(m.containsKey('ret')) ret=m['ret']; if(ret!=null){ final chal=<int>[]; for(int i=0;i<ret.length;i+=2) chal.add(int.parse(ret.substring(i,i+2),radix:16)); final md=md5.convert([0]+utf8.encode(pass)+chal); _writeSentence(['/login','=name=$user','=response=00${md.toString()}']); await _readSentence(); } }
   Future<List<Map<String,String>>> cmd(List<String> w) async { _writeSentence(w); return _readSentence(); }
   void close(){ try{_sock?.destroy();}catch(_){} }
@@ -83,6 +85,9 @@ class HomeScreen extends StatefulWidget{ final MikrotikApi api; final String ip,
 class _HomeScreenState extends State<HomeScreen>{
   int selectedPkg=0; int count=1; List<String> generated=[]; int todayCards=0,todaySales=0,expenses=0; int activeCount=0,usersCount=0; bool busy=false; String status='';
   List<CardTemplate> templates=[]; int selectedTemplate=0;
+  BlueThermalPrinter bluetooth = BlueThermalPrinter.instance;
+  BluetoothDevice? connectedPrinter;
+  bool printerConnected=false;
   Package get pkg=>packages[selectedPkg];
   CardTemplate get tmpl=>templates.isEmpty?defaultTemplates()[0]:templates[selectedTemplate.clamp(0,templates.length-1)];
   @override void initState(){ super.initState(); _loadStats(); _loadTemplates(); _refreshCounts(); }
@@ -92,7 +97,7 @@ class _HomeScreenState extends State<HomeScreen>{
   Future<void> _saveStats() async { final p=await SharedPreferences.getInstance(); await p.setInt('today_cards',todayCards); await p.setInt('today_sales',todaySales); await p.setInt('expenses',expenses); }
   Future<void> _refreshCounts() async { try{ var a=await widget.api.cmd(['/ppp/active/print']); var u=await widget.api.cmd(['/ip/hotspot/user/print']); setState((){ activeCount=a.length; usersCount=u.length; }); }catch(_){} }
   String _rand7(){ final r=Random(); String s=''; while(s.length<7) s+=r.nextInt(10).toString(); if(s=='0000000') return _rand7(); return s; }
-  Future<void> _generate() async { setState(()=>busy=true); try{ List<String> nc=[]; for(int i=0;i<count;i++){ String num=_rand7(); await widget.api.cmd(['/ip/hotspot/user/add','=name=$num','=password=$num','=profile=${pkg.profile}',' =limit-bytes-total=${pkg.quotaGB*1024*1024*1024}']); nc.add(num); } generated=nc; todayCards+=nc.length; todaySales+=nc.length*pkg.price; await _saveStats(); await _refreshCounts(); setState(()=>status='تم توليد ${nc.length} كارت'); }catch(e){ setState(()=>status='خطأ: $e'); } setState(()=>busy=false); }
+  Future<void> _generate() async { setState(()=>busy=true); try{ List<String> nc=[]; for(int i=0;i<count;i++){ String num=_rand7(); await widget.api.cmd(['/ip/hotspot/user/add','=name=$num','=password=$num','=profile=${pkg.profile}',' =limit-bytes-total=${pkg.quotaGB*1024*1024*1024}']); nc.add(num); } generated=nc; todayCards+=nc.length; todaySales+=nc.length*pkg.price; await _saveStats(); await _refreshCounts(); setState(()=>status='تم توليد ${nc.length} كارت'); if(mounted) _showCardPreview(); }catch(e){ setState(()=>status='خطأ: $e'); } setState(()=>busy=false); }
 
   Future<List<int>> _cardToImageBytes(String cardNum, Package p, CardTemplate t) async {
     const int w=576;
@@ -181,6 +186,51 @@ class _HomeScreenState extends State<HomeScreen>{
     for(int y=0;y<h;y++){ for(int bx=0;bx<bpr;bx++){ int b=0; for(int bit=0;bit<8;bit++){ int x=bx*8+bit; if(x>=w) continue; int idx=(y*w+x)*4; int gray=(rgba[idx]+rgba[idx+1]+rgba[idx+2])~/3; if(gray<150) b|=(0x80>>bit); } out.add(b); } }
     out.addAll(utf8.encode('\n\n\n\n\n\n')); out.addAll([0x1B,0x64,0x05]); out.addAll([0x1D,0x56,0x01]); return out;
   }
+
+  void _showCardPreview(){
+    if(generated.isEmpty) return;
+    showDialog(context:context, barrierDismissible:false, builder:(_){
+      return AlertDialog(title: const Text('الكارت جاهز - اطبع؟', textAlign:TextAlign.center), content: SizedBox(width:300, height:380, child: Column(children:[ Expanded(child: Container(decoration:BoxDecoration(color:Colors.white, border:Border.all(color:Colors.grey.shade300), borderRadius:BorderRadius.circular(12)), child: CustomPaint(painter:_PreviewPainter(tmpl, generated.first, pkg), size:const Size(300,320)))), const SizedBox(height:8), Text('الباقة: ${pkg.name}', style:const TextStyle(fontWeight:FontWeight.bold)), Text('عدد الكروت: ${generated.length}  |  الاجمالي: ${generated.length * pkg.price} جنيه'), ])), actions:[ TextButton(onPressed:()=>Navigator.pop(context), child:const Text('الغاء')), ElevatedButton.icon(onPressed:() async { Navigator.pop(context); await _printDirect(); }, icon:const Icon(Icons.print), label:const Text('اطبع مباشر'), style:ElevatedButton.styleFrom(backgroundColor:Colors.orange, foregroundColor:Colors.white)), ]);
+    });
+  }
+  // طباعة حقيقية بالبلوتوث - من غير وسيط
+  Future<void> _connectPrinter() async {
+    try{
+      bool? isOn = await bluetooth.isOn;
+      if(isOn != true){ ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content:Text('شغل البلوتوث الاول'))); return; }
+      List<BluetoothDevice> devices = await bluetooth.getBondedDevices();
+      if(devices.isEmpty){ ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content:Text('مفيش طابعة مقترنة - اعمل Pairing من اعدادات البلوتوث الاول - مرة واحدة بس'))); return; }
+      BluetoothDevice? chosen = await showDialog<BluetoothDevice>(context:context, builder:(_)=>AlertDialog(title:const Text('اختار الطابعة'), content:SizedBox(width:double.maxFinite, child:ListView(children: devices.map((d)=>ListTile(title:Text(d.name??'طابعة'), subtitle:Text(d.address??''), onTap:()=>Navigator.pop(context,d))).toList())), actions:[TextButton(onPressed:()=>Navigator.pop(context), child:const Text('الغاء'))]));
+      if(chosen==null) return;
+      await bluetooth.connect(chosen);
+      setState((){ connectedPrinter=chosen; printerConnected=true; });
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content:Text('اتصلنا بـ ${chosen.name} - اطبع مباشر دلوقتي')));
+    }catch(e){ ScaffoldMessenger.of(context).showSnackBar(SnackBar(content:Text('مش عارف اتصل: $e - اتأكد ان الطابعة شغالة ومش متصلة بجهاز تاني'))); }
+  }
+  Future<void> _printDirect() async {
+    if(generated.isEmpty){ ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content:Text('ولد كروت الاول'))); return; }
+    if(!printerConnected){
+      bool? isConn = await bluetooth.isConnected;
+      if(isConn != true){ await _connectPrinter(); if(!printerConnected) return; }
+    }
+    setState(()=>busy=true);
+    try{
+      for(final c in generated){
+        List<int> bytes = await _cardToImageBytes(c, pkg, tmpl);
+        const int chunkSize = 500;
+        for(int i=0;i<bytes.length;i+=chunkSize){
+          int end = (i+chunkSize < bytes.length) ? i+chunkSize : bytes.length;
+          await bluetooth.writeBytes(bytes.sublist(i,end));
+          await Future.delayed(const Duration(milliseconds:120));
+        }
+        await Future.delayed(const Duration(milliseconds:600));
+      }
+      if(mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content:Text('تمت الطباعة - بالبلوتوث مباشر')));
+    }catch(e){
+      if(mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content:Text('خطأ طباعة: $e - اتأكد ان الطابعة شغالة ومقترنة')));
+    }
+    if(mounted) setState(()=>busy=false);
+  }
   Future<void> _printCards() async { if(generated.isEmpty){ ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content:Text('ولّد كروت الأول'))); return; } setState(()=>busy=true); try{ final dir=await getTemporaryDirectory(); final file=File('${dir.path}/fazlaka_cards.prn'); List<int> all=[]; for(final c in generated) all.addAll(await _cardToImageBytes(c,pkg,tmpl)); await file.writeAsBytes(all); await Share.shareXFiles([XFile(file.path)], text:'Fazlaka Cards - افتح في RawBT واطبع'); }catch(e){ ScaffoldMessenger.of(context).showSnackBar(SnackBar(content:Text('$e'))); } setState(()=>busy=false); }
   Future<void> _testPrinter() async { final dir=await getTemporaryDirectory(); final file=File('${dir.path}/test.prn'); final bytes=await _cardToImageBytes('1234567',pkg,tmpl); await file.writeAsBytes(bytes); await Share.shareXFiles([XFile(file.path)], text:'Test Print'); }
   Future<void> _showList(String title,String cmdPath) async { try{ var res=await widget.api.cmd([cmdPath]); if(!mounted) return; showDialog(context:context, builder:(_)=>AlertDialog(title:Text(title), content:SizedBox(width:double.maxFinite,height:400, child:ListView(children: res.map((m)=>ListTile(title:Text(m['name']??m['user']??m.toString()), subtitle:Text(m.toString()))).toList())), actions:[TextButton(onPressed:()=>Navigator.pop(context), child:const Text('إغلاق'))])); }catch(e){ ScaffoldMessenger.of(context).showSnackBar(SnackBar(content:Text('$e'))); } }
@@ -201,9 +251,11 @@ class _HomeScreenState extends State<HomeScreen>{
       const SizedBox(height:12),
       Row(children:[ Expanded(child:OutlinedButton(onPressed:_testPrinter, child:const Text('تجربة الطابعة'))), const SizedBox(width:10), Expanded(child:OutlinedButton(onPressed:generated.isEmpty?null:_generate, child:const Text('إعادة طباعة'))), ]),
       const SizedBox(height:12),
-      SizedBox(width:double.infinity, child:ElevatedButton(onPressed:busy?null:_printCards, style:ElevatedButton.styleFrom(backgroundColor:Colors.orange, foregroundColor:Colors.white, padding:const EdgeInsets.symmetric(vertical:16), shape:RoundedRectangleBorder(borderRadius:BorderRadius.circular(30))), child:const Text('طباعة - RazyTech', style:TextStyle(fontSize:18,fontWeight:FontWeight.bold)))),
+      Row(children:[ Expanded(child:OutlinedButton.icon(onPressed:_connectPrinter, icon:Icon(printerConnected?Icons.bluetooth_connected:Icons.bluetooth, color:printerConnected?Colors.green:Colors.grey), label:Text(printerConnected ? 'متصل: ${connectedPrinter?.name ?? 'طابعة'}' : 'اتصال بالطابعة', style:const TextStyle(fontWeight:FontWeight.bold)))), ]),
+      const SizedBox(height:10),
+      SizedBox(width:double.infinity, child:ElevatedButton(onPressed:busy?null:_printDirect, style:ElevatedButton.styleFrom(backgroundColor:Colors.orange, foregroundColor:Colors.white, padding:const EdgeInsets.symmetric(vertical:16), shape:RoundedRectangleBorder(borderRadius:BorderRadius.circular(30))), child:const Text('طباعة مباشرة - بلوتوث', style:TextStyle(fontSize:18,fontWeight:FontWeight.bold)))),
       const SizedBox(height:20),
-    ]))));
+    ])));
   }
   Widget _statCard(String l,String v,VoidCallback t)=>GestureDetector(onTap:t, child:Container(padding:const EdgeInsets.all(14), decoration:BoxDecoration(color:Colors.white, borderRadius:BorderRadius.circular(16)), child:Column(children:[Text(l, style:const TextStyle(color:Colors.grey)), Text(v, style:const TextStyle(fontSize:22,fontWeight:FontWeight.bold))])));
   Widget _acc(String l,String v)=>Column(children:[Text(l, style:const TextStyle(color:Colors.grey)), Text(v, style:const TextStyle(fontWeight:FontWeight.bold,fontSize:16))]);
