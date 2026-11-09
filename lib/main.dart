@@ -14,11 +14,6 @@ import 'package:print_bluetooth_thermal/print_bluetooth_thermal.dart';
 
 void main() { runApp(const FazlakaApp()); }
 
-// ================= البيانات الثابتة =================
-// الراوتر: 10.10.10.1 - admin / asdf4411 - API 8728 - RouterOS 5.18
-// الطابعة: RazyTech-5890IV - طباعة بلوتوث مباشر + Share احتياطي
-// قالب الطباعة: التصميم اللي بعته انت - assets/card_template.png
-
 class Package {
   final String name;
   final String profile;
@@ -28,7 +23,6 @@ class Package {
   const Package({required this.name, required this.profile, required this.price, required this.quotaGB, required this.days});
 }
 
-// تعريف الباقات مرة واحدة بس - هنا بس - وكل الواجهة بتاخد منه
 const List<Package> packages = [
   Package(name: 'باقة 20 - 2 جيجا - 3 أيام', profile: '20', price: 20, quotaGB: 2, days: 3),
   Package(name: 'باقة 50 - 8 جيجا - 7 أيام', profile: '50', price: 50, quotaGB: 8, days: 7),
@@ -48,7 +42,6 @@ class FazlakaApp extends StatelessWidget {
   }
 }
 
-// ================= MikroTik API - RouterOS 5.18 =================
 class MikrotikApi {
   Socket? _sock;
   Stream<List<int>>? _broad;
@@ -120,7 +113,6 @@ class MikrotikApi {
   void close(){ try{_sock?.destroy();}catch(_){} _sock=null; _broad=null; }
 }
 
-// ================= شاشة الدخول =================
 class LoginScreen extends StatefulWidget { const LoginScreen({super.key}); @override State<LoginScreen> createState()=>_LoginScreenState(); }
 class _LoginScreenState extends State<LoginScreen> {
   final _ip = TextEditingController(text: '10.10.10.1');
@@ -166,7 +158,6 @@ class _LoginScreenState extends State<LoginScreen> {
   Widget _field(String label, TextEditingController c, bool obscure) => TextField(controller: c, textAlign: TextAlign.right, decoration: InputDecoration(labelText: label, border: OutlineInputBorder(borderRadius: BorderRadius.circular(14))));
 }
 
-// ================= الشاشة الرئيسية - الباقة مرة واحدة بس =================
 class HomeScreen extends StatefulWidget {
   final MikrotikApi api; final String ip, user, pass;
   const HomeScreen({super.key, required this.api, required this.ip, required this.user, required this.pass});
@@ -221,7 +212,6 @@ class _HomeScreenState extends State<HomeScreen> {
     setState(()=>busy=false);
   }
 
-  // ===== الطباعة - القالب بتاعك زي ما هو =====
   Future<List<int>> _cardToImageBytes(String cardNum, Package p) async {
     final data = await rootBundle.load('assets/card_template.png');
     final codec = await ui.instantiateImageCodec(data.buffer.asUint8List());
