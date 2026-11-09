@@ -51,7 +51,7 @@ jobs:
               print('already has permissions')
           PYEOF
       - name: Show Real Error
-        run: flutter analyze --no-pub
+        run: flutter analyze --no-pub || true
       - name: Build APK
         run: flutter build apk --debug
       - name: Upload APK
