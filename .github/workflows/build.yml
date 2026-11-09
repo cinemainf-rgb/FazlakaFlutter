@@ -23,12 +23,14 @@ jobs:
           mkdir -p /tmp/save
           cp lib/main.dart /tmp/save/main.dart
           cp pubspec.yaml /tmp/save/pubspec.yaml
+          cp -r assets /tmp/save/assets 2>/dev/null || echo 'no assets folder'
       - name: Create Android folder
         run: flutter create . --no-pub
       - name: Restore files
         run: |
           cp /tmp/save/main.dart lib/main.dart
           cp /tmp/save/pubspec.yaml pubspec.yaml
+          cp -r /tmp/save/assets assets 2>/dev/null || echo 'no saved assets'
           rm -rf test
           flutter pub get
       - name: Inject Bluetooth permissions
