@@ -8,22 +8,34 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-java@v4
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
         with:
           distribution: 'temurin'
           java-version: '17'
       - uses: subosito/flutter-action@v2
         with:
-          flutter-version: '3.22.0'
+          flutter-version: '3.27.0'
           channel: 'stable'
-      - name: Get dependencies
-        run: flutter pub get
-      - name: Analyze - هيوريك خطأ دارت بالظبط فين
-        run: flutter analyze || true
+          cache: true
+      - name: Save our files
+        run: |
+          mkdir -p /tmp/save
+          cp lib/main.dart /tmp/save/main.dart
+          cp pubspec.yaml /tmp/save/pubspec.yaml
+      - name: Create Android folder
+        run: flutter create . --no-pub
+      - name: Restore files
+        run: |
+          cp /tmp/save/main.dart lib/main.dart
+          cp /tmp/save/pubspec.yaml pubspec.yaml
+          flutter pub get
+      - name: Show Real Error
+        run: flutter analyze --no-pub
       - name: Build APK
-        run: flutter build apk --debug --verbose
+        run: flutter build apk --debug
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: app-debug
+          name: fazlaka-apk
           path: build/app/outputs/flutter-apk/app-debug.apk
