@@ -8,34 +8,22 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Set up Java 17 - مهم عشان Gradle يشتغل
-        uses: actions/setup-java@v4
+      - uses: actions/setup-java@v4
         with:
           distribution: 'temurin'
           java-version: '17'
       - uses: subosito/flutter-action@v2
         with:
-          flutter-version: '3.27.0'
+          flutter-version: '3.22.0'
           channel: 'stable'
-          cache: true
-      - name: Save our files
-        run: |
-          mkdir -p /tmp/save
-          cp lib/main.dart /tmp/save/main.dart
-          cp pubspec.yaml /tmp/save/pubspec.yaml
-          cp android/app/src/main/AndroidManifest.xml /tmp/save/AndroidManifest.xml || echo "no manifest file"
-      - name: Create Android folder
-        run: flutter create . --no-pub
-      - name: Restore our files
-        run: |
-          cp /tmp/save/main.dart lib/main.dart
-          cp /tmp/save/pubspec.yaml pubspec.yaml
-          if [ -f /tmp/save/AndroidManifest.xml ]; then cp /tmp/save/AndroidManifest.xml android/app/src/main/AndroidManifest.xml; fi
-          flutter pub get
+      - name: Get dependencies
+        run: flutter pub get
+      - name: Analyze - هيوريك خطأ دارت بالظبط فين
+        run: flutter analyze || true
       - name: Build APK
-        run: flutter build apk --debug
+        run: flutter build apk --debug --verbose
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: fazlaka-apk
+          name: app-debug
           path: build/app/outputs/flutter-apk/app-debug.apk
