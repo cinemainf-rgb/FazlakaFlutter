@@ -22,11 +22,25 @@ class MikroTikApi {
   Future<void> connect(String host, String user, String pass) async {
     _socket = await Socket.connect(host, 8728, timeout: const Duration(seconds: 5));
     _socket!.listen((d) { _buf.addAll(d); });
-    final chal = await _loginStep(user);
+
+    final chalHex = await _loginStep(user);
+
+    List<int> hexToBytes(String hex) {
+      final out = <int>[];
+      for (int i = 0; i < hex.length; i += 2) {
+        out.add(int.parse(hex.substring(i, i + 2), radix: 16));
+      }
+      return out;
+    }
+
+    // المعادلة الصح لـ RouterOS 5.18: md5( 0x00 + password + challenge_bytes )
+    final chalBytes = hexToBytes(chalHex);
+    final respHash = md5.convert([0, ...utf8.encode(pass), ...chalBytes]).toString();
+
     final resp = await _send([
       '/login',
       '=name=$user',
-      '=response=00${md5.convert(utf8.encode('\x00$chal${md5.convert(utf8.encode(pass)).toString()}')).toString()}'
+      '=response=00$respHash'
     ]);
     if (resp.any((m) => m['__type__'] == '!trap')) {
       throw Exception('يوزر أو باسورد غلط');
