@@ -14,37 +14,44 @@ const petrol = Color(0xFF0A3D3E);
 const bgColor = Color(0xFFDFF5F2);
 const printerMac = '00:1B:35:12:31:36';
 
-// ============ MikroTik API ============
+// ================= MikroTik API =================
 class MikroTikApi {
   Socket? _socket;
-  Stream<List<int>>? _broad;
   List<int> _buf = [];
 
   Future<void> connect(String host, String user, String pass) async {
     _socket = await Socket.connect(host, 8728, timeout: const Duration(seconds: 5));
-    _broad = _socket!.asBroadcastStream();
-    _broad!.listen((d) { _buf.addAll(d); });
+    _socket!.listen((d) { _buf.addAll(d); });
     final chal = await _loginStep(user);
-    final resp = await _send(['/login', '=name=$user', '=response=00${md5.convert(utf8.encode('\x00$chal${md5.convert(utf8.encode(pass)).toString()}')).toString()}']);
-    if (resp.any((m) => m.containsKey('!trap'))) throw Exception('يوزر أو باسورد غلط');
+    final resp = await _send([
+      '/login',
+      '=name=$user',
+      '=response=00${md5.convert(utf8.encode('\x00$chal${md5.convert(utf8.encode(pass)).toString()}')).toString()}'
+    ]);
+    if (resp.any((m) => m['__type__'] == '!trap')) {
+      throw Exception('يوزر أو باسورد غلط');
+    }
   }
 
   Future<String> _loginStep(String user) async {
     final r = await _send(['/login', '=name=$user']);
+    if (r.isEmpty) return '';
     return r.first['ret'] ?? '';
   }
 
-  Future<List<Map<String,String>>> command(String cmd, [List<String> args = const []]) async {
+  Future<List<Map<String, String>>> command(String cmd, [List<String> args = const []]) async {
     return _send([cmd, ...args]);
   }
 
-  Future<List<Map<String,String>>> _send(List<String> words) async {
+  Future<List<Map<String, String>>> _send(List<String> words) async {
     _buf.clear();
-    for (var w in words) _writeWord(w);
+    for (var w in words) {
+      _writeWord(w);
+    }
     _writeWord('');
-    await Future.delayed(const Duration(milliseconds: 800));
-    // استنى لحد ما الرد ييجي
-    for (int i = 0; i < 10; i++) {
+    await _socket!.flush();
+    await Future.delayed(const Duration(milliseconds: 900));
+    for (int i = 0; i < 12; i++) {
       if (_buf.isNotEmpty) break;
       await Future.delayed(const Duration(milliseconds: 300));
     }
@@ -54,65 +61,124 @@ class MikroTikApi {
   void _writeWord(String w) {
     final b = utf8.encode(w);
     final len = b.length;
-    if (len < 0x80) _socket!.add([len]);
-    else if (len < 0x4000) _socket!.add([0x80 | (len >> 8), len & 0xFF]);
-    else _socket!.add([0xC0 | (len >> 16), (len >> 8) & 0xFF, len & 0xFF]);
+    if (len < 0x80) {
+      _socket!.add([len]);
+    } else if (len < 0x4000) {
+      _socket!.add([0x80 | (len >> 8), len & 0xFF]);
+    } else {
+      _socket!.add([0xC0 | (len >> 16), (len >> 8) & 0xFF, len & 0xFF]);
+    }
     _socket!.add(b);
   }
 
-  List<Map<String,String>> _parse(List<int> data) {
-    final out = <Map<String,String>>[];
-    var cur = <String,String>{};
+  List<Map<String, String>> _parse(List<int> data) {
+    final out = <Map<String, String>>[];
+    var cur = <String, String>{};
     int i = 0;
     while (i < data.length) {
       int len = data[i++];
-      if (len & 0x80 != 0) {
-        if (len & 0xC0 == 0x80) { len = ((len & 0x3F) << 8) | data[i++]; }
-        else if (len & 0xE0 == 0xC0) { len = ((len & 0x1F) << 16) | (data[i++] << 8) | data[i++]; }
-        else if (len & 0xF0 == 0xE0) { len = ((len & 0x0F) << 24) | (data[i++] << 16) | (data[i++] << 8) | data[i++]; }
+      if ((len & 0x80) != 0) {
+        if ((len & 0xC0) == 0x80) {
+          len = ((len & 0x3F) << 8) | data[i++];
+        } else if ((len & 0xE0) == 0xC0) {
+          len = ((len & 0x1F) << 16) | (data[i++] << 8) | data[i++];
+        } else if ((len & 0xF0) == 0xE0) {
+          len = ((len & 0x0F) << 24) | (data[i++] << 16) | (data[i++] << 8) | data[i++];
+        }
       }
-      if (len == 0) { if (cur.isNotEmpty) { out.add(cur); cur = <String,String>{}; } continue; }
+      if (len == 0) {
+        if (cur.isNotEmpty) {
+          out.add(cur);
+          cur = <String, String>{};
+        }
+        continue;
+      }
+      if (i + len > data.length) break;
       final word = utf8.decode(data.sublist(i, i + len), allowMalformed: true);
       i += len;
-      if (word.startsWith('!')) { if (cur.isNotEmpty) { out.add(cur); cur = <String,String>{}; } cur['__type__'] = word; }
-      else if (word.startsWith('=')) { final eq = word.indexOf('=', 1); if (eq > 0) cur[word.substring(1, eq)] = word.substring(eq + 1); }
-      else if (word.startsWith('.')) { final eq = word.indexOf('='); if (eq > 0) cur[word.substring(1, eq)] = word.substring(eq + 1); }
+      if (word.startsWith('!')) {
+        if (cur.isNotEmpty) {
+          out.add(cur);
+          cur = <String, String>{};
+        }
+        cur['__type__'] = word;
+      } else if (word.startsWith('=')) {
+        final eq = word.indexOf('=', 1);
+        if (eq > 0) cur[word.substring(1, eq)] = word.substring(eq + 1);
+      }
     }
     if (cur.isNotEmpty) out.add(cur);
     return out;
   }
 
-  void close() { try { _socket?.destroy(); } catch (_) {} }
-  Future<List<Map<String,String>>> run(String host, String user, String pass, String cmd, [List<String> args = const []]) async {
+  void close() {
+    try { _socket?.destroy(); } catch (_) {}
+  }
+
+  Future<List<Map<String, String>>> run(String host, String user, String pass, String cmd, [List<String> args = const []]) async {
     await connect(host, user, pass);
-    try { return await command(cmd, args); } finally { close(); }
+    try {
+      return await command(cmd, args);
+    } finally {
+      close();
+    }
   }
 }
 
-// ============ App ============
-class FazlakaApp extends StatefulWidget { const FazlakaApp({super.key}); @override State<FazlakaApp> createState() => _FazlakaAppState(); }
+// ================= App =================
+class FazlakaApp extends StatefulWidget {
+  const FazlakaApp({super.key});
+  @override
+  State<FazlakaApp> createState() => _FazlakaAppState();
+}
+
 class _FazlakaAppState extends State<FazlakaApp> {
   bool ar = true;
-  @override void initState() { super.initState(); _loadLang(); }
-  Future<void> _loadLang() async { final p = await SharedPreferences.getInstance(); setState(() => ar = p.getString('lang') != 'en'); }
-  Future<void> _toggleLang() async { final p = await SharedPreferences.getInstance(); setState(() => ar = !ar); await p.setString('lang', ar ? 'ar' : 'en'); }
-  @override Widget build(BuildContext context) {
+  @override
+  void initState() { super.initState(); _loadLang(); }
+  Future<void> _loadLang() async {
+    final p = await SharedPreferences.getInstance();
+    setState(() => ar = p.getString('lang') != 'en');
+  }
+  Future<void> _toggleLang() async {
+    final p = await SharedPreferences.getInstance();
+    setState(() => ar = !ar);
+    await p.setString('lang', ar ? 'ar' : 'en');
+  }
+  @override
+  Widget build(BuildContext context) {
     return MaterialApp(
       debugShowCheckedModeBanner: false,
-      theme: ThemeData(scaffoldBackgroundColor: bgColor, primaryColor: petrol, fontFamily: 'Cairo'),
+      theme: ThemeData(scaffoldBackgroundColor: bgColor, primaryColor: petrol),
       home: LoginScreen(ar: ar, onToggleLang: _toggleLang),
     );
   }
 }
 
-class LoginScreen extends StatefulWidget { final bool ar; final VoidCallback onToggleLang; const LoginScreen({super.key, required this.ar, required this.onToggleLang}); @override State<LoginScreen> createState() => _LoginScreenState(); }
+// ================= Login =================
+class LoginScreen extends StatefulWidget {
+  final bool ar;
+  final VoidCallback onToggleLang;
+  const LoginScreen({super.key, required this.ar, required this.onToggleLang});
+  @override
+  State<LoginScreen> createState() => _LoginScreenState();
+}
+
 class _LoginScreenState extends State<LoginScreen> {
   final _host = TextEditingController(text: '10.10.10.1');
-  final _user = TextEditingController(); // فاضي - انت بتكتبه
-  final _pass = TextEditingController(); // فاضي - انت بتكتبه
-  bool _loading = false; String _err = '';
-  @override void initState() { super.initState(); _loadSaved(); }
-  Future<void> _loadSaved() async { final p = await SharedPreferences.getInstance(); _user.text = p.getString('u') ?? ''; _pass.text = p.getString('p') ?? ''; }
+  final _user = TextEditingController();
+  final _pass = TextEditingController();
+  bool _loading = false;
+  String _err = '';
+
+  @override
+  void initState() { super.initState(); _loadSaved(); }
+  Future<void> _loadSaved() async {
+    final p = await SharedPreferences.getInstance();
+    _user.text = p.getString('u') ?? '';
+    _pass.text = p.getString('p') ?? '';
+  }
+
   Future<void> _login() async {
     setState(() { _loading = true; _err = ''; });
     try {
@@ -120,63 +186,131 @@ class _LoginScreenState extends State<LoginScreen> {
       await api.connect(_host.text.trim(), _user.text.trim(), _pass.text.trim());
       api.close();
       final p = await SharedPreferences.getInstance();
-      await p.setString('u', _user.text.trim()); await p.setString('p', _pass.text.trim());
+      await p.setString('u', _user.text.trim());
+      await p.setString('p', _pass.text.trim());
       if (!mounted) return;
-      Navigator.pushReplacement(context, MaterialPageRoute(builder: (_) => MainTabs(host: _host.text.trim(), user: _user.text.trim(), pass: _pass.text.trim(), ar: widget.ar, onToggleLang: widget.onToggleLang)));
-    } catch (e) { setState(() => _err = 'مش قادر أوصل للراوتر: $e'); }
+      Navigator.pushReplacement(
+        context,
+        MaterialPageRoute(builder: (_) => MainTabs(host: _host.text.trim(), user: _user.text.trim(), pass: _pass.text.trim(), ar: widget.ar, onToggleLang: widget.onToggleLang)),
+      );
+    } catch (e) {
+      setState(() => _err = 'مش قادر أوصل للراوتر: $e');
+    }
     setState(() => _loading = false);
   }
-  @override Widget build(BuildContext context) {
-    return Scaffold(body: SafeArea(child: SingleChildScrollView(padding: const EdgeInsets.all(20), child: Column(children: [
-      Align(alignment: Alignment.topLeft, child: ElevatedButton(onPressed: widget.onToggleLang, child: Text(widget.ar ? 'EN' : 'عربي'))),
-      const SizedBox(height: 30),
-      const CircleAvatar(radius: 45, backgroundColor: petrol, child: Icon(Icons.wifi, color: Colors.white, size: 45)),
-      const SizedBox(height: 16),
-      const Text('FAZLAKA', style: TextStyle(fontSize: 36, fontWeight: FontWeight.bold, color: petrol, letterSpacing: 4)),
-      Text(widget.ar ? 'مدير الهوت سبوت' : 'Hotspot Manager', style: const TextStyle(color: Colors.grey)),
-      const SizedBox(height: 30),
-      TextField(controller: _host, decoration: InputDecoration(labelText: widget.ar ? 'عنوان السيرفر' : 'Server IP', filled: true, fillColor: Colors.white, border: OutlineInputBorder(borderRadius: BorderRadius.circular(14)))),
-      const SizedBox(height: 12),
-      TextField(controller: _user, decoration: InputDecoration(labelText: widget.ar ? 'اسم المستخدم' : 'Username', filled: true, fillColor: Colors.white, border: OutlineInputBorder(borderRadius: BorderRadius.circular(14)))),
-      const SizedBox(height: 12),
-      TextField(controller: _pass, obscureText: true, decoration: InputDecoration(labelText: widget.ar ? 'كلمة السر' : 'Password', filled: true, fillColor: Colors.white, border: OutlineInputBorder(borderRadius: BorderRadius.circular(14)))),
-      const SizedBox(height: 16),
-      if (_err.isNotEmpty) Text(_err, style: const TextStyle(color: Colors.red)),
-      const SizedBox(height: 8),
-      SizedBox(width: double.infinity, height: 56, child: ElevatedButton(style: ElevatedButton.styleFrom(backgroundColor: petrol, shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(28))), onPressed: _loading ? null : _login, child: _loading ? const CircularProgressIndicator(color: Colors.white) : Text(widget.ar ? 'دخول' : 'CONNECT', style: const TextStyle(fontSize: 20, fontWeight: FontWeight.bold)))),
-      const SizedBox(height: 8),
-      // مفيش كلمة Razy هنا خالص
-    ]))));
-  }
-}
 
-// ============ Tabs ============
-class MainTabs extends StatefulWidget { final String host, user, pass; final bool ar; final VoidCallback onToggleLang; const MainTabs({super.key, required this.host, required this.user, required this.pass, required this.ar, required this.onToggleLang}); @override State<MainTabs> createState() => _MainTabsState(); }
-class _MainTabsState extends State<MainTabs> {
-  int _idx = 0;
-  @override Widget build(BuildContext context) {
-    final pages = [HomeTab(host: widget.host, user: widget.user, pass: widget.pass, ar: widget.ar), CardsTab(host: widget.host, user: widget.user, pass: widget.pass, ar: widget.ar), SalesTab(ar: widget.ar), const AccountTab()];
+  @override
+  Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(backgroundColor: petrol, title: const Text('FAZLAKA', style: TextStyle(color: Colors.white, letterSpacing: 4)), centerTitle: true, actions: [IconButton(onPressed: widget.onToggleLang, icon: Text(widget.ar ? 'EN' : 'عربي', style: const TextStyle(color: Colors.white)))]),
-      body: pages[_idx],
-      bottomNavigationBar: BottomNavigationBar(currentIndex: _idx, onTap: (i) => setState(() => _idx = i), selectedItemColor: petrol, unselectedItemColor: Colors.grey, items: [
-        BottomNavigationBarItem(icon: const Icon(Icons.home), label: widget.ar ? 'الرئيسية' : 'Home'),
-        BottomNavigationBarItem(icon: const Icon(Icons.credit_card), label: widget.ar ? 'الكروت' : 'Cards'),
-        BottomNavigationBarItem(icon: const Icon(Icons.bar_chart), label: widget.ar ? 'المبيعات' : 'Sales'),
-        BottomNavigationBarItem(icon: const Icon(Icons.person), label: widget.ar ? 'الحساب' : 'Account'),
-      ]),
+      body: SafeArea(
+        child: SingleChildScrollView(
+          padding: const EdgeInsets.all(20),
+          child: Column(
+            children: [
+              Align(
+                alignment: Alignment.topLeft,
+                child: ElevatedButton(onPressed: widget.onToggleLang, child: Text(widget.ar ? 'EN' : 'عربي')),
+              ),
+              const SizedBox(height: 30),
+              const CircleAvatar(radius: 45, backgroundColor: petrol, child: Icon(Icons.wifi, color: Colors.white, size: 45)),
+              const SizedBox(height: 16),
+              const Text('FAZLAKA', style: TextStyle(fontSize: 36, fontWeight: FontWeight.bold, color: petrol, letterSpacing: 4)),
+              Text(widget.ar ? 'مدير الهوت سبوت' : 'Hotspot Manager', style: const TextStyle(color: Colors.grey)),
+              const SizedBox(height: 30),
+              TextField(controller: _host, decoration: InputDecoration(labelText: widget.ar ? 'عنوان السيرفر' : 'Server IP', filled: true, fillColor: Colors.white, border: OutlineInputBorder(borderRadius: BorderRadius.circular(14)))),
+              const SizedBox(height: 12),
+              TextField(controller: _user, decoration: InputDecoration(labelText: widget.ar ? 'اسم المستخدم' : 'Username', filled: true, fillColor: Colors.white, border: OutlineInputBorder(borderRadius: BorderRadius.circular(14)))),
+              const SizedBox(height: 12),
+              TextField(controller: _pass, obscureText: true, decoration: InputDecoration(labelText: widget.ar ? 'كلمة السر' : 'Password', filled: true, fillColor: Colors.white, border: OutlineInputBorder(borderRadius: BorderRadius.circular(14)))),
+              const SizedBox(height: 16),
+              if (_err.isNotEmpty) Text(_err, style: const TextStyle(color: Colors.red)),
+              const SizedBox(height: 8),
+              SizedBox(
+                width: double.infinity,
+                height: 56,
+                child: ElevatedButton(
+                  style: ElevatedButton.styleFrom(backgroundColor: petrol, shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(28))),
+                  onPressed: _loading ? null : _login,
+                  child: _loading ? const CircularProgressIndicator(color: Colors.white) : Text(widget.ar ? 'دخول' : 'CONNECT', style: const TextStyle(fontSize: 20, fontWeight: FontWeight.bold)),
+                ),
+              ),
+              const SizedBox(height: 8),
+            ],
+          ),
+        ),
+      ),
     );
   }
 }
 
-// ============ Home - انشاء + طباعة ============
-class HomeTab extends StatefulWidget { final String host, user, pass; final bool ar; const HomeTab({super.key, required this.host, required this.user, required this.pass, required this.ar}); @override State<HomeTab> createState() => _HomeTabState(); }
-class _HomeTabState extends State<HomeTab> {
-  String _profile = '20'; int _count = 1; List<String> _created = []; String _printer = 'No Printer'; String _msg = ''; bool _busy = false;
-  @override void initState() { super.initState(); _autoPrinter(); }
-  Future<void> _autoPrinter() async {
-    try { final ok = await PrintBluetoothThermal.connect(macPrinterAddress: printerMac); if (mounted) setState(() => _printer = ok ? 'RazyTech-5890IV' : 'No Printer'); } catch (_) { if (mounted) setState(() => _printer = 'No Printer'); }
+// ================= Tabs =================
+class MainTabs extends StatefulWidget {
+  final String host, user, pass;
+  final bool ar;
+  final VoidCallback onToggleLang;
+  const MainTabs({super.key, required this.host, required this.user, required this.pass, required this.ar, required this.onToggleLang});
+  @override
+  State<MainTabs> createState() => _MainTabsState();
+}
+
+class _MainTabsState extends State<MainTabs> {
+  int _idx = 0;
+  @override
+  Widget build(BuildContext context) {
+    final pages = [
+      HomeTab(host: widget.host, user: widget.user, pass: widget.pass, ar: widget.ar),
+      CardsTab(host: widget.host, user: widget.user, pass: widget.pass, ar: widget.ar),
+      SalesTab(ar: widget.ar),
+      const AccountTab(),
+    ];
+    return Scaffold(
+      appBar: AppBar(backgroundColor: petrol, title: const Text('FAZLAKA', style: TextStyle(color: Colors.white, letterSpacing: 4)), centerTitle: true, actions: [IconButton(onPressed: widget.onToggleLang, icon: Text(widget.ar ? 'EN' : 'عربي', style: const TextStyle(color: Colors.white)))]),
+      body: pages[_idx],
+      bottomNavigationBar: BottomNavigationBar(
+        currentIndex: _idx,
+        onTap: (i) => setState(() => _idx = i),
+        selectedItemColor: petrol,
+        unselectedItemColor: Colors.grey,
+        items: [
+          BottomNavigationBarItem(icon: const Icon(Icons.home), label: widget.ar ? 'الرئيسية' : 'Home'),
+          BottomNavigationBarItem(icon: const Icon(Icons.credit_card), label: widget.ar ? 'الكروت' : 'Cards'),
+          BottomNavigationBarItem(icon: const Icon(Icons.bar_chart), label: widget.ar ? 'المبيعات' : 'Sales'),
+          BottomNavigationBarItem(icon: const Icon(Icons.person), label: widget.ar ? 'الحساب' : 'Account'),
+        ],
+      ),
+    );
   }
+}
+
+// ================= Home =================
+class HomeTab extends StatefulWidget {
+  final String host, user, pass;
+  final bool ar;
+  const HomeTab({super.key, required this.host, required this.user, required this.pass, required this.ar});
+  @override
+  State<HomeTab> createState() => _HomeTabState();
+}
+
+class _HomeTabState extends State<HomeTab> {
+  String _profile = '20';
+  int _count = 1;
+  List<String> _created = [];
+  String _printer = 'No Printer';
+  String _msg = '';
+  bool _busy = false;
+
+  @override
+  void initState() { super.initState(); _autoPrinter(); }
+
+  Future<void> _autoPrinter() async {
+    try {
+      final ok = await PrintBluetoothThermal.connect(macPrinterAddress: printerMac);
+      if (mounted) setState(() => _printer = ok ? 'RazyTech-5890IV' : 'No Printer');
+    } catch (_) {
+      if (mounted) setState(() => _printer = 'No Printer');
+    }
+  }
+
   String _quota(String p) => p == '20' ? '2' : p == '50' ? '8' : '20';
   String _days(String p) => p == '20' ? '3d' : p == '50' ? '7d' : '30d';
   String _bytes(String p) => p == '20' ? '2147483648' : p == '50' ? '8589934592' : '21474836480';
@@ -184,11 +318,16 @@ class _HomeTabState extends State<HomeTab> {
   Future<void> _create() async {
     setState(() { _busy = true; _msg = ''; _created = []; });
     try {
-      final rnd = Random(); final names = <String>[];
-      for (int i = 0; i < _count; i++) { names.add('${1000000 + rnd.nextInt(9000000)}'); }
+      final rnd = Random();
+      final names = <String>[];
+      for (int i = 0; i < _count; i++) {
+        names.add('${1000000 + rnd.nextInt(9000000)}');
+      }
       for (final name in names) {
         final res = await MikroTikApi().run(widget.host, widget.user, widget.pass, '/ip/hotspot/user/add', ['=name=$name', '=password=$name', '=profile=$_profile', '=limit-uptime=${_days(_profile)}', '=limit-bytes-total=${_bytes(_profile)}']);
-        if (res.any((m) => m['__type__'] == '!trap')) throw Exception(res.first['message'] ?? 'الراوتر رفض');
+        if (res.any((m) => m['__type__'] == '!trap')) {
+          throw Exception(res.first['message'] ?? 'الراوتر رفض');
+        }
       }
       final p = await SharedPreferences.getInstance();
       final today = DateTime.now().toIso8601String().substring(0, 10);
@@ -196,122 +335,337 @@ class _HomeTabState extends State<HomeTab> {
       final oldSum = p.getInt('sales_${today}_sum') ?? 0;
       await p.setInt('sales_${today}_count', oldCount + names.length);
       await p.setInt('sales_${today}_sum', oldSum + (int.parse(_profile) * names.length));
-      setState(() { _created = names; _msg = widget.ar ? 'تم انشاء ${_count} كارت' : 'Created $_count cards'; });
-    } catch (e) { setState(() => _msg = 'فشل: $e'); }
+      setState(() { _created = names; _msg = widget.ar ? 'تم انشاء $_count كارت' : 'Created $_count cards'; });
+    } catch (e) {
+      setState(() => _msg = 'فشل: $e');
+    }
     setState(() => _busy = false);
   }
 
   Future<void> _print() async {
-    if (_created.isEmpty) { setState(() => _msg = 'اعمل انشاء الأول'); return; }
+    if (_created.isEmpty) {
+      setState(() => _msg = 'اعمل انشاء الأول');
+      return;
+    }
     try {
       final ok = await PrintBluetoothThermal.connect(macPrinterAddress: printerMac);
-      if (!ok) { setState(() => _msg = 'الطابعة مش متوصلة - اتأكد إنها شغالة'); return; }
+      if (!ok) {
+        setState(() => _msg = 'الطابعة مش متوصلة - اتأكد إنها شغالة');
+        return;
+      }
       for (final name in _created) {
         final bytes = <int>[];
-        bytes.addAll([0x1B, 0x40]); // init
-        bytes.addAll([0x1B, 0x61, 0x01]); // center
-        bytes.addAll([0x1D, 0x21, 0x11]); bytes.addAll(utf8.encode('FAZLAKA\n'));
+        bytes.addAll([0x1B, 0x40]);
+        bytes.addAll([0x1B, 0x61, 0x01]);
+        bytes.addAll([0x1D, 0x21, 0x11]);
+        bytes.addAll(utf8.encode('FAZLAKA\n'));
         bytes.addAll([0x1D, 0x21, 0x00]);
         bytes.addAll(utf8.encode('01016620065 - 01141418040\n'));
         bytes.addAll(utf8.encode('----------------\n'));
-        bytes.addAll([0x1D, 0x21, 0x22]); bytes.addAll(utf8.encode('$name\n'));
+        bytes.addAll([0x1D, 0x21, 0x22]);
+        bytes.addAll(utf8.encode('$name\n'));
         bytes.addAll([0x1D, 0x21, 0x00]);
         bytes.addAll(utf8.encode('Price: $_profile | Quota: ${_quota(_profile)}GB\n\n\n'));
-        bytes.addAll([0x1D, 0x56, 0x00]); // cut
+        bytes.addAll([0x1D, 0x56, 0x00]);
         await PrintBluetoothThermal.writeBytes(bytes);
         await Future.delayed(const Duration(milliseconds: 500));
       }
       setState(() => _msg = 'تم الطباعة');
-    } catch (e) { setState(() => _msg = 'فشل الطباعة: $e'); }
+    } catch (e) {
+      setState(() => _msg = 'فشل الطباعة: $e');
+    }
   }
 
-  @override Widget build(BuildContext context) {
-    return SingleChildScrollView(padding: const EdgeInsets.all(16), child: Column(children: [
-      Container(padding: const EdgeInsets.all(16), decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(20)), child: Column(children: [
-        Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [Text(widget.ar ? 'انشاء كروت' : 'Create Cards', style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: petrol)), const SizedBox()]),
-        const SizedBox(height: 12),
-        Row(children: ['20','50','100'].map((p) => Expanded(child: Padding(padding: const EdgeInsets.all(4), child: GestureDetector(onTap: () => setState(() => _profile = p), child: Container(height: 60, alignment: Alignment.center, decoration: BoxDecoration(color: _profile == p ? petrol : Colors.grey[200], borderRadius: BorderRadius.circular(14)), child: Text(p, style: TextStyle(fontSize: 24, fontWeight: FontWeight.bold, color: _profile == p ? Colors.white : Colors.black))))))).toList()),
-        const SizedBox(height: 12),
-        Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [Text(widget.ar ? 'عدد الكروت' : 'Count'), Row(children: [IconButton(onPressed: () => setState(() => _count = (_count + 1).clamp(1, 100))), Text('$_count', style: const TextStyle(fontSize: 22, fontWeight: FontWeight.bold)), IconButton(onPressed: () => setState(() => _count = (_count - 1).clamp(1, 100)), icon: const Icon(Icons.remove))])]),
-      ])),
-      const SizedBox(height: 16),
-      SizedBox(width: double.infinity, height: 56, child: ElevatedButton(style: ElevatedButton.styleFrom(backgroundColor: petrol, shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16))), onPressed: _busy ? null : _create, child: Text(widget.ar ? 'انشاء' : 'Create', style: const TextStyle(fontSize: 20)))),
-      const SizedBox(height: 12),
-      SizedBox(width: double.infinity, height: 56, child: OutlinedButton(style: OutlinedButton.styleFrom(side: const BorderSide(color: petrol, width: 2), shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16))), onPressed: _print, child: Text(widget.ar ? 'طباعة' : 'Print', style: const TextStyle(fontSize: 20, color: petrol)))),
-      const SizedBox(height: 12),
-      Container(padding: const EdgeInsets.all(12), decoration: BoxDecoration(border: Border.all(color: Colors.grey), borderRadius: BorderRadius.circular(20)), child: Row(mainAxisAlignment: MainAxisAlignment.center, children: [const Icon(Icons.bluetooth, color: petrol), const SizedBox(width: 8), Text('${widget.ar ? 'طابعة' : 'Printer'}: $_printer')])),
-      const SizedBox(height: 12),
-      if (_msg.isNotEmpty) Text(_msg, style: const TextStyle(fontWeight: FontWeight.bold)),
-      if (_created.isNotEmpty) ...[
-        const SizedBox(height: 12),
-        Container(padding: const EdgeInsets.all(12), decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(16)), child: Column(children: [Text(widget.ar ? 'الكروت المنشأة - راجع قبل الطباعة' : 'Created cards'), ..._created.map((c) => Padding(padding: const EdgeInsets.all(6), child: Text(c, style: const TextStyle(fontSize: 22, fontWeight: FontWeight.bold, letterSpacing: 2))))])),
-      ],
-    ]));
+  @override
+  Widget build(BuildContext context) {
+    return SingleChildScrollView(
+      padding: const EdgeInsets.all(16),
+      child: Column(
+        children: [
+          Container(
+            padding: const EdgeInsets.all(16),
+            decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(20)),
+            child: Column(
+              children: [
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [Text(widget.ar ? 'انشاء كروت' : 'Create Cards', style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: petrol))],
+                ),
+                const SizedBox(height: 12),
+                Row(
+                  children: ['20', '50', '100'].map((p) => Expanded(
+                    child: Padding(
+                      padding: const EdgeInsets.all(4),
+                      child: GestureDetector(
+                        onTap: () => setState(() => _profile = p),
+                        child: Container(
+                          height: 60,
+                          alignment: Alignment.center,
+                          decoration: BoxDecoration(color: _profile == p ? petrol : Colors.grey[200], borderRadius: BorderRadius.circular(14)),
+                          child: Text(p, style: TextStyle(fontSize: 24, fontWeight: FontWeight.bold, color: _profile == p ? Colors.white : Colors.black)),
+                        ),
+                      ),
+                    ),
+                  )).toList(),
+                ),
+                const SizedBox(height: 12),
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    Text(widget.ar ? 'عدد الكروت' : 'Count'),
+                    Row(
+                      children: [
+                        IconButton(
+                          onPressed: () { setState(() { if (_count < 100) _count++; }); },
+                          icon: const Icon(Icons.add),
+                        ),
+                        Text('$_count', style: const TextStyle(fontSize: 22, fontWeight: FontWeight.bold)),
+                        IconButton(
+                          onPressed: () { setState(() { if (_count > 1) _count--; }); },
+                          icon: const Icon(Icons.remove),
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 16),
+          SizedBox(
+            width: double.infinity,
+            height: 56,
+            child: ElevatedButton(
+              style: ElevatedButton.styleFrom(backgroundColor: petrol, shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16))),
+              onPressed: _busy ? null : _create,
+              child: Text(widget.ar ? 'انشاء' : 'Create', style: const TextStyle(fontSize: 20)),
+            ),
+          ),
+          const SizedBox(height: 12),
+          SizedBox(
+            width: double.infinity,
+            height: 56,
+            child: OutlinedButton(
+              style: OutlinedButton.styleFrom(side: const BorderSide(color: petrol, width: 2), shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16))),
+              onPressed: _print,
+              child: Text(widget.ar ? 'طباعة' : 'Print', style: const TextStyle(fontSize: 20, color: petrol)),
+            ),
+          ),
+          const SizedBox(height: 12),
+          Container(
+            padding: const EdgeInsets.all(12),
+            decoration: BoxDecoration(border: Border.all(color: Colors.grey), borderRadius: BorderRadius.circular(20)),
+            child: Row(mainAxisAlignment: MainAxisAlignment.center, children: [const Icon(Icons.bluetooth, color: petrol), const SizedBox(width: 8), Text('${widget.ar ? 'طابعة' : 'Printer'}: $_printer')]),
+          ),
+          const SizedBox(height: 12),
+          if (_msg.isNotEmpty) Text(_msg, style: const TextStyle(fontWeight: FontWeight.bold)),
+          if (_created.isNotEmpty) ...[
+            const SizedBox(height: 12),
+            Container(
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(16)),
+              child: Column(
+                children: [
+                  Text(widget.ar ? 'الكروت المنشأة - راجع قبل الطباعة' : 'Created cards'),
+                  ..._created.map((c) => Padding(padding: const EdgeInsets.all(6), child: Text(c, style: const TextStyle(fontSize: 22, fontWeight: FontWeight.bold, letterSpacing: 2)))),
+                ],
+              ),
+            ),
+          ],
+        ],
+      ),
+    );
   }
 }
 
-// ============ Cards - اكتيف + كروت حقيقي ============
-class CardsTab extends StatefulWidget { final String host, user, pass; final bool ar; const CardsTab({super.key, required this.host, required this.user, required this.pass, required this.ar}); @override State<CardsTab> createState() => _CardsTabState(); }
+// ================= Cards =================
+class CardsTab extends StatefulWidget {
+  final String host, user, pass;
+  final bool ar;
+  const CardsTab({super.key, required this.host, required this.user, required this.pass, required this.ar});
+  @override
+  State<CardsTab> createState() => _CardsTabState();
+}
+
 class _CardsTabState extends State<CardsTab> {
-  List<Map<String,String>> _users = []; List<Map<String,String>> _active = []; bool _showActive = true; bool _loading = false; String _err = '';
-  @override void initState() { super.initState(); _refresh(); }
+  List<Map<String, String>> _users = [];
+  List<Map<String, String>> _active = [];
+  bool _showActive = true;
+  bool _loading = false;
+  String _err = '';
+
+  @override
+  void initState() { super.initState(); _refresh(); }
+
   Future<void> _refresh() async {
     setState(() { _loading = true; _err = ''; });
     try {
-      final api = MikroTikApi(); await api.connect(widget.host, widget.user, widget.pass);
+      final api = MikroTikApi();
+      await api.connect(widget.host, widget.user, widget.pass);
       final users = await api.command('/ip/hotspot/user/print');
       final active = await api.command('/ip/hotspot/active/print');
       api.close();
       setState(() { _users = users; _active = active; });
-    } catch (e) { setState(() => _err = 'مش قادر أوصل للراوتر: $e'); }
+    } catch (e) {
+      setState(() => _err = 'مش قادر أوصل للراوتر: $e');
+    }
     setState(() => _loading = false);
   }
-  @override Widget build(BuildContext context) {
+
+  @override
+  Widget build(BuildContext context) {
     final list = _showActive ? _active : _users;
-    return SingleChildScrollView(padding: const EdgeInsets.all(16), child: Column(children: [
-      Container(padding: const EdgeInsets.all(16), decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(20)), child: Column(children: [
-        Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [Text(widget.ar ? 'حالة الراوتر' : 'Router Status', style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 18)), Container(padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6), decoration: BoxDecoration(color: Colors.green[50], borderRadius: BorderRadius.circular(20)), child: const Text('● متصل', style: TextStyle(color: Colors.green)))]),
-        const SizedBox(height: 16),
-        Row(mainAxisAlignment: MainAxisAlignment.spaceAround, children: [Column(children: [Text(widget.ar ? 'الكروت' : 'Cards', style: const TextStyle(color: Colors.grey)), Text('${_users.length}', style: const TextStyle(fontSize: 32, fontWeight: FontWeight.bold, color: petrol))]), Column(children: [Text(widget.ar ? 'النشط' : 'Active', style: const TextStyle(color: Colors.grey)), Text('${_active.length}', style: const TextStyle(fontSize: 32, fontWeight: FontWeight.bold, color: petrol))])]),
-        const SizedBox(height: 16),
-        Row(children: [Expanded(child: ElevatedButton(style: ElevatedButton.styleFrom(backgroundColor: _showActive ? petrol : Colors.white, foregroundColor: _showActive ? Colors.white : petrol), onPressed: () => setState(() => _showActive = true), child: Text(widget.ar ? 'المتصلين الآن' : 'Online Now'))), const SizedBox(width: 8), Expanded(child: ElevatedButton(style: ElevatedButton.styleFrom(backgroundColor: !_showActive ? petrol : Colors.white, foregroundColor: !_showActive ? Colors.white : petrol), onPressed: () => setState(() => _showActive = false), child: Text(widget.ar ? 'كل الكروت' : 'All Cards')))]),
-      ])),
-      const SizedBox(height: 12),
-      if (_loading) const CircularProgressIndicator(color: petrol),
-      if (_err.isNotEmpty) Text(_err, style: const TextStyle(color: Colors.red)),
-      Text(widget.ar ? (_showActive ? 'المتصلين الآن - النشطين بس' : 'كل الكروت') : (_showActive ? 'Online Only' : 'All Cards'), style: const TextStyle(fontWeight: FontWeight.bold)),
-      const SizedBox(height: 8),
-      ...list.map((u) => Card(child: ListTile(title: Text(u['user'] ?? u['name'] ?? '', style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 18)), subtitle: Text(_showActive ? (widget.ar ? 'نشط' : 'Active') : (u['profile'] ?? '')), trailing: _showActive ? const Icon(Icons.circle, color: Colors.green, size: 12) : null))),
-      TextButton.icon(onPressed: _refresh, icon: const Icon(Icons.refresh), label: Text(widget.ar ? 'تحديث' : 'Refresh')),
-    ]));
+    return SingleChildScrollView(
+      padding: const EdgeInsets.all(16),
+      child: Column(
+        children: [
+          Container(
+            padding: const EdgeInsets.all(16),
+            decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(20)),
+            child: Column(
+              children: [
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    Text(widget.ar ? 'حالة الراوتر' : 'Router Status', style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 18)),
+                    Container(padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6), decoration: BoxDecoration(color: Colors.green[50], borderRadius: BorderRadius.circular(20)), child: const Text('● متصل', style: TextStyle(color: Colors.green))),
+                  ],
+                ),
+                const SizedBox(height: 16),
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceAround,
+                  children: [
+                    Column(children: [Text(widget.ar ? 'الكروت' : 'Cards', style: const TextStyle(color: Colors.grey)), Text('${_users.length}', style: const TextStyle(fontSize: 32, fontWeight: FontWeight.bold, color: petrol))]),
+                    Column(children: [Text(widget.ar ? 'النشط' : 'Active', style: const TextStyle(color: Colors.grey)), Text('${_active.length}', style: const TextStyle(fontSize: 32, fontWeight: FontWeight.bold, color: petrol))]),
+                  ],
+                ),
+                const SizedBox(height: 16),
+                Row(
+                  children: [
+                    Expanded(child: ElevatedButton(style: ElevatedButton.styleFrom(backgroundColor: _showActive ? petrol : Colors.white, foregroundColor: _showActive ? Colors.white : petrol), onPressed: () => setState(() => _showActive = true), child: Text(widget.ar ? 'المتصلين الآن' : 'Online Now'))),
+                    const SizedBox(width: 8),
+                    Expanded(child: ElevatedButton(style: ElevatedButton.styleFrom(backgroundColor: !_showActive ? petrol : Colors.white, foregroundColor: !_showActive ? Colors.white : petrol), onPressed: () => setState(() => _showActive = false), child: Text(widget.ar ? 'كل الكروت' : 'All Cards'))),
+                  ],
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 12),
+          if (_loading) const CircularProgressIndicator(color: petrol),
+          if (_err.isNotEmpty) Text(_err, style: const TextStyle(color: Colors.red)),
+          Text(widget.ar ? (_showActive ? 'المتصلين الآن - النشطين بس' : 'كل الكروت') : (_showActive ? 'Online Only' : 'All Cards'), style: const TextStyle(fontWeight: FontWeight.bold)),
+          const SizedBox(height: 8),
+          ...list.map((u) => Card(child: ListTile(title: Text(u['user'] ?? u['name'] ?? '', style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 18)), subtitle: Text(_showActive ? (widget.ar ? 'نشط' : 'Active') : (u['profile'] ?? '')), trailing: _showActive ? const Icon(Icons.circle, color: Colors.green, size: 12) : null))),
+          TextButton.icon(onPressed: _refresh, icon: const Icon(Icons.refresh), label: Text(widget.ar ? 'تحديث' : 'Refresh')),
+        ],
+      ),
+    );
   }
 }
 
-// ============ Sales ============
-class SalesTab extends StatefulWidget { final bool ar; const SalesTab({super.key, required this.ar}); @override State<SalesTab> createState() => _SalesTabState(); }
-class _SalesTabState extends State<SalesTab> {
-  int _count = 0; int _sum = 0;
-  @override void initState() { super.initState(); _load(); }
-  Future<void> _load() async { final p = await SharedPreferences.getInstance(); final today = DateTime.now().toIso8601String().substring(0, 10); setState(() { _count = p.getInt('sales_${today}_count') ?? 0; _sum = p.getInt('sales_${today}_sum') ?? 0; }); }
-  @override Widget build(BuildContext context) => Padding(padding: const EdgeInsets.all(16), child: Container(padding: const EdgeInsets.all(20), decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(20)), child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [Text(widget.ar ? 'مبيعات النهاردة' : "Today's Sales", style: const TextStyle(fontSize: 18)), const SizedBox(height: 16), Text('$_sum ${widget.ar ? 'ج.م' : 'EGP'}', style: const TextStyle(fontSize: 36, fontWeight: FontWeight.bold, color: petrol)), Text('$_count ${widget.ar ? 'كارت' : 'cards'}'), TextButton(onPressed: _load, child: Text(widget.ar ? 'تحديث' : 'Refresh'))])));
+// ================= Sales =================
+class SalesTab extends StatefulWidget {
+  final bool ar;
+  const SalesTab({super.key, required this.ar});
+  @override
+  State<SalesTab> createState() => _SalesTabState();
 }
 
-// ============ Account ============
-class AccountTab extends StatefulWidget { const AccountTab({super.key}); @override State<AccountTab> createState() => _AccountTabState(); }
+class _SalesTabState extends State<SalesTab> {
+  int _count = 0;
+  int _sum = 0;
+  @override
+  void initState() { super.initState(); _load(); }
+  Future<void> _load() async {
+    final p = await SharedPreferences.getInstance();
+    final today = DateTime.now().toIso8601String().substring(0, 10);
+    setState(() { _count = p.getInt('sales_${today}_count') ?? 0; _sum = p.getInt('sales_${today}_sum') ?? 0; });
+  }
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.all(16),
+      child: Container(
+        width: double.infinity,
+        padding: const EdgeInsets.all(20),
+        decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(20)),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Text(widget.ar ? 'مبيعات النهاردة' : "Today's Sales", style: const TextStyle(fontSize: 18)),
+            const SizedBox(height: 16),
+            Text('$_sum ${widget.ar ? 'ج.م' : 'EGP'}', style: const TextStyle(fontSize: 36, fontWeight: FontWeight.bold, color: petrol)),
+            Text('$_count ${widget.ar ? 'كارت' : 'cards'}'),
+            TextButton(onPressed: _load, child: Text(widget.ar ? 'تحديث' : 'Refresh')),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+// ================= Account =================
+class AccountTab extends StatefulWidget {
+  const AccountTab({super.key});
+  @override
+  State<AccountTab> createState() => _AccountTabState();
+}
+
 class _AccountTabState extends State<AccountTab> {
   int _exp = 0;
-  @override void initState() { super.initState(); _load(); }
-  Future<void> _load() async { final p = await SharedPreferences.getInstance(); setState(() => _exp = p.getInt('exp_today') ?? 0); }
+  @override
+  void initState() { super.initState(); _load(); }
+  Future<void> _load() async {
+    final p = await SharedPreferences.getInstance();
+    setState(() => _exp = p.getInt('exp_today') ?? 0);
+  }
   Future<void> _addExp() async {
     final c = TextEditingController();
-    final v = await showDialog<String>(context: context, builder: (_) => AlertDialog(title: const Text('اضافة مصروف'), content: TextField(controller: c, keyboardType: TextInputType.number, decoration: const InputDecoration(hintText: 'المبلغ')), actions: [TextButton(onPressed: () => Navigator.pop(context, c.text), child: const Text('اضافة'))]));
-    if (v != null && v.isNotEmpty) { final p = await SharedPreferences.getInstance(); await p.setInt('exp_today', _exp + (int.tryParse(v) ?? 0)); _load(); }
+    final v = await showDialog<String>(
+      context: context,
+      builder: (_) => AlertDialog(
+        title: const Text('اضافة مصروف'),
+        content: TextField(controller: c, keyboardType: TextInputType.number, decoration: const InputDecoration(hintText: 'المبلغ')),
+        actions: [TextButton(onPressed: () => Navigator.pop(context, c.text), child: const Text('اضافة'))],
+      ),
+    );
+    if (v != null && v.isNotEmpty) {
+      final p = await SharedPreferences.getInstance();
+      await p.setInt('exp_today', _exp + (int.tryParse(v) ?? 0));
+      _load();
+    }
   }
-  @override Widget build(BuildContext context) => Padding(padding: const EdgeInsets.all(16), child: Column(children: [
-    Container(padding: const EdgeInsets.all(20), decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(20)), child: Row(mainAxisAlignment: MainAxisAlignment.spaceAround, children: [Column(children: [const Text('الصافي'), Text('$_exp', style: const TextStyle(fontSize: 24, fontWeight: FontWeight.bold, color: petrol))]), Column(children: [const Text('المصاريف'), Text('$_exp', style: const TextStyle(fontSize: 24, fontWeight: FontWeight.bold))])])),
-    const SizedBox(height: 16),
-    SizedBox(width: double.infinity, height: 52, child: ElevatedButton(style: ElevatedButton.styleFrom(backgroundColor: petrol), onPressed: _addExp, child: const Text('اضافة مصروف'))),
-    const SizedBox(height: 8),
-    SizedBox(width: double.infinity, height: 52, child: OutlinedButton(onPressed: () async { final p = await SharedPreferences.getInstance(); await p.setInt('exp_today', 0); _load(); }, child: const Text('تصفير'))),
-  ]));
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.all(16),
+      child: Column(
+        children: [
+          Container(
+            padding: const EdgeInsets.all(20),
+            decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(20)),
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.spaceAround,
+              children: [
+                Column(children: [const Text('الصافي'), Text('$_exp', style: const TextStyle(fontSize: 24, fontWeight: FontWeight.bold, color: petrol))]),
+                Column(children: [const Text('المصاريف'), Text('$_exp', style: const TextStyle(fontSize: 24, fontWeight: FontWeight.bold))]),
+              ],
+            ),
+          ),
+          const SizedBox(height: 16),
+          SizedBox(width: double.infinity, height: 52, child: ElevatedButton(style: ElevatedButton.styleFrom(backgroundColor: petrol), onPressed: _addExp, child: const Text('اضافة مصروف'))),
+          const SizedBox(height: 8),
+          SizedBox(
+            width: double.infinity,
+            height: 52,
+            child: OutlinedButton(
+              onPressed: () async { final p = await SharedPreferences.getInstance(); await p.setInt('exp_today', 0); _load(); },
+              child: const Text('تصفير'),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
 }
