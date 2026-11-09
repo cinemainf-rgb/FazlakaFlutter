@@ -19,7 +19,7 @@ jobs:
           cp pubspec.yaml /tmp/save/pubspec.yaml
           cp android/app/src/main/AndroidManifest.xml /tmp/save/AndroidManifest.xml || echo "no manifest file"
       - name: Create Android folder
-        run: flutter create .
+        run: flutter create . --no-pub
       - name: Restore our files
         run: |
           cp /tmp/save/main.dart lib/main.dart
