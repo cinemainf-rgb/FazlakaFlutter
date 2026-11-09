@@ -1,5 +1,5 @@
 name: fazlaka
-description: Fazlaka Hotspot
+description: Fazlaka Hotspot Manager
 publish_to: 'none'
 version: 1.0.0+1
 environment:
@@ -10,8 +10,5 @@ dependencies:
   shared_preferences: ^2.2.2
   crypto: ^3.0.3
   print_bluetooth_thermal: ^1.0.0
-dev_dependencies:
-  flutter_test:
-    sdk: flutter
 flutter:
   uses-material-design: true
