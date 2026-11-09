@@ -6,13 +6,13 @@ final packages=[Pkg('باقة 20', '20', 20, 2, 3),Pkg('باقة 50','50',50,8,7
 class MikrotikApi{Socket? s;
 Future<void> connect(String h,int p)async{s=await Socket.connect(h,p,timeout:const Duration(seconds:5));}
 void wWord(String w){final b=utf8.encode(w);final l=b.length;if(l<0x80)s!.add([l]);else if(l<0x4000)s!.add([(l>>8)|0x80,l&0xFF]);else s!.add([(l>>16)|0xC0,(l>>8)&0xFF,l&0xFF]);s!.add(b);}
-void wSen(List<String> ws){for(final w in ws)wWord(w);s!.add([0]);}
+void wSen(List<String> ws){for(final w in ws)wWord(w);s!.add([0x00]);}
 Future<List<Map<String,String>>> readSen()async{final c=Completer<List<Map<String,String>>>();final out=<Map<String,String>>[];var cur=<String,String>{};var buf=<int>[];StreamSubscription? sub;
 sub=s!.listen((d){buf.addAll(d);int i=0;while(i<buf.length){int len=buf[i];i++;if(len==0){if(cur.isNotEmpty)out.add(Map.from(cur));cur={};continue;}if(len&0x80!=0){if(i>=buf.length)break;len=((len&0x7F)<<8)|buf[i];i++;}if(i+len>buf.length)break;final word=utf8.decode(buf.sublist(i,i+len),allowMalformed:true);i+=len;
 if(word=='!done'||word=='!re'||word=='!trap'||word=='!fatal'){if(word!='!re'){if(cur.isNotEmpty)out.add(Map.from(cur));cur={};}if(word=='!done'){if(!c.isCompleted){c.complete(out);sub?.cancel();}}}else if(word.startsWith('=')){final eq=word.indexOf('=',1);if(eq>0)cur[word.substring(1,eq)]=word.substring(eq+1);}}buf=buf.sublist(i);},onError:(e){if(!c.isCompleted)c.completeError(e);},onDone:(){if(!c.isCompleted)c.complete(out);});
 return c.future.timeout(const Duration(seconds:8),onTimeout:()=>out);}
 Future<void> login(String u,String p)async{wSen(['/login','=name=$u','=password=$p']);var r=await readSen();String? ret;for(var m in r)if(m.containsKey('ret'))ret=m['ret'];
-if(ret!=null){final chal=<int>[];for(int i=0;i<ret.length;i+=2)chal.add(int.parse(ret.substring(i,i+2),radix:16));final pass=md5.convert(utf8.encode(p)).bytes;final data=[0]+chal+pass;final h='00'+md5.convert(data).toString();wSen(['/login','=name=$u','=response=$h']);await readSen();}}
+if(ret!=null){final chal=<int>[];for(int i=0;i<ret.length;i+=2)chal.add(int.parse(ret.substring(i,i+2),radix:16));final pass=md5.convert(utf8.encode(p)).bytes;final List<int> data=<int>[];data.add(0x00);data.addAll(chal);data.addAll(pass);final h='00'+md5.convert(data).toString();wSen(['/login','=name=$u','=response=$h']);await readSen();}}
 Future<List<Map<String,String>>> cmd(List<String> ws)async{wSen(ws);return readSen();}
 void disconnect(){try{s?.destroy();}catch(_){}s=null;}}
 class LoginScreen extends StatefulWidget{const LoginScreen({super.key});@override State<LoginScreen> createState()=>_Login();}
@@ -24,7 +24,7 @@ TextField(controller:pass,obscureText:true,decoration:const InputDecoration(labe
 SizedBox(width:double.infinity,child:ElevatedButton(onPressed:busy?null:()async{setState(()=>busy=true);try{final api=MikrotikApi();await api.connect(ip.text.trim(),8728);await api.login(user.text.trim(),pass.text.trim());if(!mounted)return;Navigator.pushReplacement(context,MaterialPageRoute(builder:(_)=>HomeScreen(api:api)));}catch(e){setState(()=>st='خطأ: $e');}setState(()=>busy=false);},style:ElevatedButton.styleFrom(backgroundColor:const Color(0xFF009688),foregroundColor:Colors.white,padding:const EdgeInsets.symmetric(vertical:16),shape:RoundedRectangleBorder(borderRadius:BorderRadius.circular(30))),child:const Text('دخول',style:TextStyle(fontSize:18,fontWeight:FontWeight.bold)))),
 const SizedBox(height:12),Text(st,style:const TextStyle(color:Colors.red))]))));}}
 class HomeScreen extends StatefulWidget{final MikrotikApi api;const HomeScreen({super.key,required this.api});@override State<HomeScreen> createState()=>_Home();}
-class _Home extends State<HomeScreen>{int selPkg=0;int count=1;List<String> generated=[];int activeCount=0,usersCount=0,todayCards=0,todaySales=0,expenses=0;String status='';bool busy=false;bool printerConnected=false;
+class _Home extends State<HomeScreen>{int selPkg=0;int count=1;List<String> generated=[];int activeCount=0,usersCount=0,todayCards=0,todaySales=0,expenses=0;String status='';bool busy=false;
 String rand7(){final r=Random();String s='';for(int i=0;i<7;i++)s+=r.nextInt(10).toString();return s;}
 @override void initState(){super.initState();_load();_refresh();}
 Future<void> _load()async{final p=await SharedPreferences.getInstance();setState((){todayCards=p.getInt('today_cards')??0;todaySales=p.getInt('today_sales')??0;expenses=p.getInt('expenses')??0;});}
