@@ -34,9 +34,12 @@ final packages = [
 
 class MikrotikApi {
   Socket? s;
+  Stream<List<int>>? broad;
 
   Future<void> connect(String h, int p) async {
-    s = await Socket.connect(h, p, timeout: const Duration(seconds: 5));
+    final sock = await Socket.connect(h, p, timeout: const Duration(seconds: 5));
+    s = sock;
+    broad = sock.asBroadcastStream();
   }
 
   void wWord(String w) {
@@ -65,7 +68,7 @@ class MikrotikApi {
     var cur = <String, String>{};
     var buf = <int>[];
     StreamSubscription? sub;
-    sub = s!.listen((d) {
+    sub = broad!.listen((d) {
       buf.addAll(d);
       int i = 0;
       while (i < buf.length) {
@@ -153,6 +156,7 @@ class MikrotikApi {
       s?.destroy();
     } catch (_) {}
     s = null;
+    broad = null;
   }
 }
 
@@ -500,7 +504,7 @@ class _Home extends State<HomeScreen> {
       await f.writeAsBytes(all);
       await Share.shareXFiles(
         [XFile(f.path)],
-        text: 'Fazlaka Cards - افتح في RawBT واطبع',
+        text: 'Fazlaka Cards',
       );
     } catch (e) {
       if (mounted) {
