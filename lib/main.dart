@@ -5,6 +5,7 @@ import 'dart:math';
 import 'dart:typed_data';
 import 'package:crypto/crypto.dart';
 import 'package:flutter/material.dart';
+import 'package:permission_handler/permission_handler.dart';
 import 'package:print_bluetooth_thermal/print_bluetooth_thermal.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -30,7 +31,6 @@ class MikroTikApi {
       }
       return out;
     }
-    // الصح لـ RouterOS 5.18: md5( 0x00 + password + challenge )
     final chalBytes = hexToBytes(chalHex);
     final respHash = md5.convert([0, ...utf8.encode(pass), ...chalBytes]).toString();
     final resp = await _send(['/login', '=name=$user', '=response=00$respHash']);
@@ -161,7 +161,7 @@ class _FazlakaAppState extends State<FazlakaApp> {
   }
 }
 
-// ================= Login - من غير تذكرني - من غير Razy =================
+// ================= Login - من غير تذكرني =================
 class LoginScreen extends StatefulWidget {
   final bool ar;
   final VoidCallback onToggleLang;
@@ -229,7 +229,6 @@ class _LoginScreenState extends State<LoginScreen> {
                   child: _loading ? const CircularProgressIndicator(color: Colors.white) : Text(widget.ar ? 'دخول' : 'CONNECT', style: const TextStyle(fontSize: 20, fontWeight: FontWeight.bold)),
                 ),
               ),
-              const SizedBox(height: 8),
             ],
           ),
         ),
@@ -299,6 +298,8 @@ class _HomeTabState extends State<HomeTab> {
 
   Future<void> _autoPrinter() async {
     try {
+      final s = await Permission.bluetoothConnect.request();
+      if (!s.isGranted) return;
       final paired = await PrintBluetoothThermal.pairedBluetooths;
       for (final p in paired) {
         if (p.macAdress == printerMac) {
@@ -310,18 +311,27 @@ class _HomeTabState extends State<HomeTab> {
     } catch (_) {}
   }
 
+  // زرار الطابعة الحقيقي - بيطلب إذن وبيتصل وبيقولك النتيجة
   Future<void> _pickPrinter() async {
+    final s1 = await Permission.bluetoothConnect.request();
+    final s2 = await Permission.bluetoothScan.request();
+    await Permission.location.request();
+    if (!s1.isGranted) {
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('ادي التطبيق إذن البلوتوث من الإعدادات الأول')));
+      return;
+    }
     try {
       final paired = await PrintBluetoothThermal.pairedBluetooths;
       if (!mounted) return;
       if (paired.isEmpty) {
-        setState(() => _msg = 'مفيش طابعة مربوطة - افتح بلوتوث الموبايل واعمل Pair الأول');
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('مفيش طابعة مربوطة - افتح بلوتوث الموبايل واعمل Pair لـ RazyTech الأول')));
         return;
       }
       for (final p in paired) {
         if (p.macAdress == printerMac || p.name.contains('Razy')) {
           final ok = await PrintBluetoothThermal.connect(macPrinterAddress: p.macAdress);
           setState(() => _printer = ok ? p.name : 'No Printer');
+          ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(ok ? 'اتصلت بـ ${p.name}' : 'فشل الاتصال')));
           return;
         }
       }
@@ -340,7 +350,7 @@ class _HomeTabState extends State<HomeTab> {
         ),
       );
     } catch (e) {
-      setState(() => _msg = 'فشل البلوتوث: $e');
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('فشل البلوتوث: $e')));
     }
   }
 
@@ -357,7 +367,6 @@ class _HomeTabState extends State<HomeTab> {
         names.add('${1000000 + rnd.nextInt(9000000)}');
       }
       for (final name in names) {
-        // 1. انشاء حقيقي زي Winbox بالظبط - اسم + باسورد + بروفايل + server=all
         final res = await MikroTikApi().run(widget.host, widget.user, widget.pass, '/ip/hotspot/user/add', [
           '=name=$name',
           '=password=$name',
@@ -367,13 +376,11 @@ class _HomeTabState extends State<HomeTab> {
         if (res.any((m) => m['__type__'] == '!trap')) {
           throw Exception(res.first['message'] ?? 'الراوتر رفض');
         }
-        // 2. اتأكد إنه اتعمل بجد في الراوتر
         final check = await MikroTikApi().run(widget.host, widget.user, widget.pass, '/ip/hotspot/user/print');
         final found = check.where((m) => m['name'] == name).toList();
         if (found.isEmpty) {
           throw Exception('الكارت $name متعملش في الراوتر');
         }
-        // 3. حدد الجيجات والوقت بأمر منفصل - الجيجات من التطبيق، السرعة من البروفايل
         final id = found.first['.id'] ?? '';
         if (id.isNotEmpty) {
           await MikroTikApi().run(widget.host, widget.user, widget.pass, '/ip/hotspot/user/set', [
@@ -402,9 +409,10 @@ class _HomeTabState extends State<HomeTab> {
       return;
     }
     try {
+      await Permission.bluetoothConnect.request();
       final ok = await PrintBluetoothThermal.connect(macPrinterAddress: printerMac);
       if (!ok) {
-        setState(() => _msg = 'الطابعة مش متوصلة - دوس على بار الطابعة واختار RazyTech-5890IV الأول');
+        if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('الطابعة مش متوصلة - دوس على زرار الطابعة واختار RazyTech الأول')));
         return;
       }
       for (final name in _created) {
@@ -506,12 +514,15 @@ class _HomeTabState extends State<HomeTab> {
             ),
           ),
           const SizedBox(height: 12),
-          GestureDetector(
-            onTap: _pickPrinter,
-            child: Container(
-              padding: const EdgeInsets.all(12),
-              decoration: BoxDecoration(border: Border.all(color: Colors.grey), borderRadius: BorderRadius.circular(20)),
-              child: Row(mainAxisAlignment: MainAxisAlignment.center, children: [const Icon(Icons.bluetooth, color: petrol), const SizedBox(width: 8), Text('${widget.ar ? 'طابعة' : 'Printer'}: $_printer - دوس هنا')]),
+          // زرار الطابعة الحقيقي - مش ديكور
+          SizedBox(
+            width: double.infinity,
+            height: 56,
+            child: ElevatedButton.icon(
+              style: ElevatedButton.styleFrom(backgroundColor: Colors.white, foregroundColor: petrol, side: const BorderSide(color: petrol, width: 2), shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20))),
+              onPressed: _pickPrinter,
+              icon: const Icon(Icons.bluetooth, color: petrol),
+              label: Text('طابعة: $_printer - دوس هنا لتوصيل الطابعة', style: const TextStyle(fontSize: 15, fontWeight: FontWeight.bold)),
             ),
           ),
           const SizedBox(height: 12),
