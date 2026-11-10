@@ -22,9 +22,7 @@ class MikroTikApi {
   Future<void> connect(String host, String user, String pass) async {
     _socket = await Socket.connect(host, 8728, timeout: const Duration(seconds: 5));
     _socket!.listen((d) { _buf.addAll(d); });
-
     final chalHex = await _loginStep(user);
-
     List<int> hexToBytes(String hex) {
       final out = <int>[];
       for (int i = 0; i < hex.length; i += 2) {
@@ -32,16 +30,10 @@ class MikroTikApi {
       }
       return out;
     }
-
-    // المعادلة الصح لـ RouterOS 5.18: md5( 0x00 + password + challenge_bytes )
+    // الصح لـ RouterOS 5.18: md5( 0x00 + password + challenge )
     final chalBytes = hexToBytes(chalHex);
     final respHash = md5.convert([0, ...utf8.encode(pass), ...chalBytes]).toString();
-
-    final resp = await _send([
-      '/login',
-      '=name=$user',
-      '=response=00$respHash'
-    ]);
+    final resp = await _send(['/login', '=name=$user', '=response=00$respHash']);
     if (resp.any((m) => m['__type__'] == '!trap')) {
       throw Exception('يوزر أو باسورد غلط');
     }
@@ -169,7 +161,7 @@ class _FazlakaAppState extends State<FazlakaApp> {
   }
 }
 
-// ================= Login =================
+// ================= Login - من غير تذكرني - من غير Razy =================
 class LoginScreen extends StatefulWidget {
   final bool ar;
   final VoidCallback onToggleLang;
@@ -185,23 +177,12 @@ class _LoginScreenState extends State<LoginScreen> {
   bool _loading = false;
   String _err = '';
 
-  @override
-  void initState() { super.initState(); _loadSaved(); }
-  Future<void> _loadSaved() async {
-    final p = await SharedPreferences.getInstance();
-    _user.text = p.getString('u') ?? '';
-    _pass.text = p.getString('p') ?? '';
-  }
-
   Future<void> _login() async {
     setState(() { _loading = true; _err = ''; });
     try {
       final api = MikroTikApi();
       await api.connect(_host.text.trim(), _user.text.trim(), _pass.text.trim());
       api.close();
-      final p = await SharedPreferences.getInstance();
-      await p.setString('u', _user.text.trim());
-      await p.setString('p', _pass.text.trim());
       if (!mounted) return;
       Navigator.pushReplacement(
         context,
@@ -296,7 +277,7 @@ class _MainTabsState extends State<MainTabs> {
   }
 }
 
-// ================= Home =================
+// ================= Home - انشاء حقيقي + طباعة حقيقية =================
 class HomeTab extends StatefulWidget {
   final String host, user, pass;
   final bool ar;
@@ -318,10 +299,48 @@ class _HomeTabState extends State<HomeTab> {
 
   Future<void> _autoPrinter() async {
     try {
-      final ok = await PrintBluetoothThermal.connect(macPrinterAddress: printerMac);
-      if (mounted) setState(() => _printer = ok ? 'RazyTech-5890IV' : 'No Printer');
-    } catch (_) {
-      if (mounted) setState(() => _printer = 'No Printer');
+      final paired = await PrintBluetoothThermal.pairedBluetooths;
+      for (final p in paired) {
+        if (p.macAdress == printerMac) {
+          final ok = await PrintBluetoothThermal.connect(macPrinterAddress: printerMac);
+          if (mounted) setState(() => _printer = ok ? 'RazyTech-5890IV' : 'No Printer');
+          return;
+        }
+      }
+    } catch (_) {}
+  }
+
+  Future<void> _pickPrinter() async {
+    try {
+      final paired = await PrintBluetoothThermal.pairedBluetooths;
+      if (!mounted) return;
+      if (paired.isEmpty) {
+        setState(() => _msg = 'مفيش طابعة مربوطة - افتح بلوتوث الموبايل واعمل Pair الأول');
+        return;
+      }
+      for (final p in paired) {
+        if (p.macAdress == printerMac || p.name.contains('Razy')) {
+          final ok = await PrintBluetoothThermal.connect(macPrinterAddress: p.macAdress);
+          setState(() => _printer = ok ? p.name : 'No Printer');
+          return;
+        }
+      }
+      showModalBottomSheet(
+        context: context,
+        builder: (_) => ListView(
+          children: paired.map((p) => ListTile(
+            title: Text(p.name),
+            subtitle: Text(p.macAdress),
+            onTap: () async {
+              Navigator.pop(context);
+              final ok = await PrintBluetoothThermal.connect(macPrinterAddress: p.macAdress);
+              setState(() => _printer = ok ? p.name : 'No Printer');
+            },
+          )).toList(),
+        ),
+      );
+    } catch (e) {
+      setState(() => _msg = 'فشل البلوتوث: $e');
     }
   }
 
@@ -338,9 +357,30 @@ class _HomeTabState extends State<HomeTab> {
         names.add('${1000000 + rnd.nextInt(9000000)}');
       }
       for (final name in names) {
-        final res = await MikroTikApi().run(widget.host, widget.user, widget.pass, '/ip/hotspot/user/add', ['=name=$name', '=password=$name', '=profile=$_profile', '=limit-uptime=${_days(_profile)}', '=limit-bytes-total=${_bytes(_profile)}']);
+        // 1. انشاء حقيقي زي Winbox بالظبط - اسم + باسورد + بروفايل + server=all
+        final res = await MikroTikApi().run(widget.host, widget.user, widget.pass, '/ip/hotspot/user/add', [
+          '=name=$name',
+          '=password=$name',
+          '=profile=$_profile',
+          '=server=all',
+        ]);
         if (res.any((m) => m['__type__'] == '!trap')) {
           throw Exception(res.first['message'] ?? 'الراوتر رفض');
+        }
+        // 2. اتأكد إنه اتعمل بجد في الراوتر
+        final check = await MikroTikApi().run(widget.host, widget.user, widget.pass, '/ip/hotspot/user/print');
+        final found = check.where((m) => m['name'] == name).toList();
+        if (found.isEmpty) {
+          throw Exception('الكارت $name متعملش في الراوتر');
+        }
+        // 3. حدد الجيجات والوقت بأمر منفصل - الجيجات من التطبيق، السرعة من البروفايل
+        final id = found.first['.id'] ?? '';
+        if (id.isNotEmpty) {
+          await MikroTikApi().run(widget.host, widget.user, widget.pass, '/ip/hotspot/user/set', [
+            '=numbers=$id',
+            '=limit-uptime=${_days(_profile)}',
+            '=limit-bytes-total=${_bytes(_profile)}',
+          ]);
         }
       }
       final p = await SharedPreferences.getInstance();
@@ -349,7 +389,7 @@ class _HomeTabState extends State<HomeTab> {
       final oldSum = p.getInt('sales_${today}_sum') ?? 0;
       await p.setInt('sales_${today}_count', oldCount + names.length);
       await p.setInt('sales_${today}_sum', oldSum + (int.parse(_profile) * names.length));
-      setState(() { _created = names; _msg = widget.ar ? 'تم انشاء $_count كارت' : 'Created $_count cards'; });
+      setState(() { _created = names; _msg = widget.ar ? 'تم انشاء $_count كارت - متأكد من الراوتر' : 'Created $_count cards - verified'; });
     } catch (e) {
       setState(() => _msg = 'فشل: $e');
     }
@@ -364,7 +404,7 @@ class _HomeTabState extends State<HomeTab> {
     try {
       final ok = await PrintBluetoothThermal.connect(macPrinterAddress: printerMac);
       if (!ok) {
-        setState(() => _msg = 'الطابعة مش متوصلة - اتأكد إنها شغالة');
+        setState(() => _msg = 'الطابعة مش متوصلة - دوس على بار الطابعة واختار RazyTech-5890IV الأول');
         return;
       }
       for (final name in _created) {
@@ -466,10 +506,13 @@ class _HomeTabState extends State<HomeTab> {
             ),
           ),
           const SizedBox(height: 12),
-          Container(
-            padding: const EdgeInsets.all(12),
-            decoration: BoxDecoration(border: Border.all(color: Colors.grey), borderRadius: BorderRadius.circular(20)),
-            child: Row(mainAxisAlignment: MainAxisAlignment.center, children: [const Icon(Icons.bluetooth, color: petrol), const SizedBox(width: 8), Text('${widget.ar ? 'طابعة' : 'Printer'}: $_printer')]),
+          GestureDetector(
+            onTap: _pickPrinter,
+            child: Container(
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(border: Border.all(color: Colors.grey), borderRadius: BorderRadius.circular(20)),
+              child: Row(mainAxisAlignment: MainAxisAlignment.center, children: [const Icon(Icons.bluetooth, color: petrol), const SizedBox(width: 8), Text('${widget.ar ? 'طابعة' : 'Printer'}: $_printer - دوس هنا')]),
+            ),
           ),
           const SizedBox(height: 12),
           if (_msg.isNotEmpty) Text(_msg, style: const TextStyle(fontWeight: FontWeight.bold)),
@@ -492,7 +535,7 @@ class _HomeTabState extends State<HomeTab> {
   }
 }
 
-// ================= Cards =================
+// ================= Cards - حقيقي =================
 class CardsTab extends StatefulWidget {
   final String host, user, pass;
   final bool ar;
