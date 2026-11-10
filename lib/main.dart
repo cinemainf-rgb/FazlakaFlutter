@@ -15,7 +15,6 @@ const petrol = Color(0xFF0A3D3E);
 const bgColor = Color(0xFFDFF5F2);
 const printerMac = '00:1B:35:12:31:36';
 
-// ================= MikroTik API =================
 class MikroTikApi {
   Socket? _socket;
   List<int> _buf = [];
@@ -35,7 +34,7 @@ class MikroTikApi {
     final respHash = md5.convert([0, ...utf8.encode(pass), ...chalBytes]).toString();
     final resp = await _send(['/login', '=name=$user', '=response=00$respHash']);
     if (resp.any((m) => m['__type__'] == '!trap')) {
-      throw Exception('يوزر أو باسورد غلط');
+      throw Exception('اسم المستخدم أو كلمة السر غير صحيحة');
     }
   }
 
@@ -131,7 +130,6 @@ class MikroTikApi {
   }
 }
 
-// ================= App =================
 class FazlakaApp extends StatefulWidget {
   const FazlakaApp({super.key});
   @override
@@ -161,7 +159,6 @@ class _FazlakaAppState extends State<FazlakaApp> {
   }
 }
 
-// ================= Login - من غير تذكرني =================
 class LoginScreen extends StatefulWidget {
   final bool ar;
   final VoidCallback onToggleLang;
@@ -189,7 +186,7 @@ class _LoginScreenState extends State<LoginScreen> {
         MaterialPageRoute(builder: (_) => MainTabs(host: _host.text.trim(), user: _user.text.trim(), pass: _pass.text.trim(), ar: widget.ar, onToggleLang: widget.onToggleLang)),
       );
     } catch (e) {
-      setState(() => _err = 'مش قادر أوصل للراوتر: $e');
+      setState(() => _err = 'تعذر الاتصال بالراوتر');
     }
     setState(() => _loading = false);
   }
@@ -237,7 +234,6 @@ class _LoginScreenState extends State<LoginScreen> {
   }
 }
 
-// ================= Tabs =================
 class MainTabs extends StatefulWidget {
   final String host, user, pass;
   final bool ar;
@@ -276,7 +272,6 @@ class _MainTabsState extends State<MainTabs> {
   }
 }
 
-// ================= Home - انشاء حقيقي + طباعة حقيقية =================
 class HomeTab extends StatefulWidget {
   final String host, user, pass;
   final bool ar;
@@ -289,51 +284,26 @@ class _HomeTabState extends State<HomeTab> {
   String _profile = '20';
   int _count = 1;
   List<String> _created = [];
-  String _printer = 'No Printer';
+  String _printer = 'غير متصلة';
   String _msg = '';
   bool _busy = false;
 
-  @override
-  void initState() { super.initState(); _autoPrinter(); }
-
-  Future<void> _autoPrinter() async {
-    try {
-      final s = await Permission.bluetoothConnect.request();
-      if (!s.isGranted) return;
-      final paired = await PrintBluetoothThermal.pairedBluetooths;
-      for (final p in paired) {
-        if (p.macAdress == printerMac) {
-          final ok = await PrintBluetoothThermal.connect(macPrinterAddress: printerMac);
-          if (mounted) setState(() => _printer = ok ? 'RazyTech-5890IV' : 'No Printer');
-          return;
-        }
-      }
-    } catch (_) {}
-  }
-
-  // زرار الطابعة الحقيقي - بيطلب إذن وبيتصل وبيقولك النتيجة
   Future<void> _pickPrinter() async {
     final s1 = await Permission.bluetoothConnect.request();
-    final s2 = await Permission.bluetoothScan.request();
+    await Permission.bluetoothScan.request();
     await Permission.location.request();
     if (!s1.isGranted) {
-      if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('ادي التطبيق إذن البلوتوث من الإعدادات الأول')));
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('يرجى السماح بإذن البلوتوث')));
       return;
     }
     try {
+      try { await PrintBluetoothThermal.disconnect(); } catch (_) {}
+      await Future.delayed(const Duration(milliseconds: 500));
       final paired = await PrintBluetoothThermal.pairedBluetooths;
       if (!mounted) return;
       if (paired.isEmpty) {
-        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('مفيش طابعة مربوطة - افتح بلوتوث الموبايل واعمل Pair لـ RazyTech الأول')));
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('لا توجد طابعة مقترنة')));
         return;
-      }
-      for (final p in paired) {
-        if (p.macAdress == printerMac || p.name.contains('Razy')) {
-          final ok = await PrintBluetoothThermal.connect(macPrinterAddress: p.macAdress);
-          setState(() => _printer = ok ? p.name : 'No Printer');
-          ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(ok ? 'اتصلت بـ ${p.name}' : 'فشل الاتصال')));
-          return;
-        }
       }
       showModalBottomSheet(
         context: context,
@@ -343,14 +313,16 @@ class _HomeTabState extends State<HomeTab> {
             subtitle: Text(p.macAdress),
             onTap: () async {
               Navigator.pop(context);
+              ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('جارٍ الاتصال بـ ${p.name}...')));
               final ok = await PrintBluetoothThermal.connect(macPrinterAddress: p.macAdress);
-              setState(() => _printer = ok ? p.name : 'No Printer');
+              setState(() => _printer = ok ? p.name : 'غير متصلة');
+              if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(ok ? 'تم الاتصال بالطابعة' : 'تعذر الاتصال بالطابعة')));
             },
           )).toList(),
         ),
       );
     } catch (e) {
-      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('فشل البلوتوث: $e')));
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('تعذر الاتصال بالطابعة')));
     }
   }
 
@@ -374,12 +346,12 @@ class _HomeTabState extends State<HomeTab> {
           '=server=all',
         ]);
         if (res.any((m) => m['__type__'] == '!trap')) {
-          throw Exception(res.first['message'] ?? 'الراوتر رفض');
+          throw Exception('تعذر إنشاء الكارت');
         }
         final check = await MikroTikApi().run(widget.host, widget.user, widget.pass, '/ip/hotspot/user/print');
         final found = check.where((m) => m['name'] == name).toList();
         if (found.isEmpty) {
-          throw Exception('الكارت $name متعملش في الراوتر');
+          throw Exception('تعذر إنشاء الكارت');
         }
         final id = found.first['.id'] ?? '';
         if (id.isNotEmpty) {
@@ -396,23 +368,21 @@ class _HomeTabState extends State<HomeTab> {
       final oldSum = p.getInt('sales_${today}_sum') ?? 0;
       await p.setInt('sales_${today}_count', oldCount + names.length);
       await p.setInt('sales_${today}_sum', oldSum + (int.parse(_profile) * names.length));
-      setState(() { _created = names; _msg = widget.ar ? 'تم انشاء $_count كارت - متأكد من الراوتر' : 'Created $_count cards - verified'; });
+      setState(() { _created = names; _msg = widget.ar ? 'تم إنشاء $_count كارت بنجاح' : 'Created $_count cards successfully'; });
     } catch (e) {
-      setState(() => _msg = 'فشل: $e');
+      setState(() => _msg = 'تعذر إنشاء الكارت');
     }
     setState(() => _busy = false);
   }
 
   Future<void> _print() async {
     if (_created.isEmpty) {
-      setState(() => _msg = 'اعمل انشاء الأول');
+      setState(() => _msg = 'أنشئ كارت أولاً');
       return;
     }
     try {
-      await Permission.bluetoothConnect.request();
-      final ok = await PrintBluetoothThermal.connect(macPrinterAddress: printerMac);
-      if (!ok) {
-        if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('الطابعة مش متوصلة - دوس على زرار الطابعة واختار RazyTech الأول')));
+      if (_printer == 'غير متصلة') {
+        if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('اختر الطابعة أولاً')));
         return;
       }
       for (final name in _created) {
@@ -432,9 +402,9 @@ class _HomeTabState extends State<HomeTab> {
         await PrintBluetoothThermal.writeBytes(bytes);
         await Future.delayed(const Duration(milliseconds: 500));
       }
-      setState(() => _msg = 'تم الطباعة');
+      setState(() => _msg = 'تمت الطباعة');
     } catch (e) {
-      setState(() => _msg = 'فشل الطباعة: $e');
+      setState(() => _msg = 'تعذر الطباعة');
     }
   }
 
@@ -451,7 +421,7 @@ class _HomeTabState extends State<HomeTab> {
               children: [
                 Row(
                   mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                  children: [Text(widget.ar ? 'انشاء كروت' : 'Create Cards', style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: petrol))],
+                  children: [Text(widget.ar ? 'إنشاء كروت' : 'Create Cards', style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: petrol))],
                 ),
                 const SizedBox(height: 12),
                 Row(
@@ -500,7 +470,7 @@ class _HomeTabState extends State<HomeTab> {
             child: ElevatedButton(
               style: ElevatedButton.styleFrom(backgroundColor: petrol, shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16))),
               onPressed: _busy ? null : _create,
-              child: Text(widget.ar ? 'انشاء' : 'Create', style: const TextStyle(fontSize: 20)),
+              child: Text(widget.ar ? 'إنشاء' : 'Create', style: const TextStyle(fontSize: 20)),
             ),
           ),
           const SizedBox(height: 12),
@@ -514,7 +484,6 @@ class _HomeTabState extends State<HomeTab> {
             ),
           ),
           const SizedBox(height: 12),
-          // زرار الطابعة الحقيقي - مش ديكور
           SizedBox(
             width: double.infinity,
             height: 56,
@@ -522,7 +491,7 @@ class _HomeTabState extends State<HomeTab> {
               style: ElevatedButton.styleFrom(backgroundColor: Colors.white, foregroundColor: petrol, side: const BorderSide(color: petrol, width: 2), shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20))),
               onPressed: _pickPrinter,
               icon: const Icon(Icons.bluetooth, color: petrol),
-              label: Text('طابعة: $_printer - دوس هنا لتوصيل الطابعة', style: const TextStyle(fontSize: 15, fontWeight: FontWeight.bold)),
+              label: Text(_printer == 'غير متصلة' ? (widget.ar ? 'توصيل الطابعة' : 'Connect Printer') : '${widget.ar ? 'الطابعة' : 'Printer'}: $_printer', style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
             ),
           ),
           const SizedBox(height: 12),
@@ -534,7 +503,7 @@ class _HomeTabState extends State<HomeTab> {
               decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(16)),
               child: Column(
                 children: [
-                  Text(widget.ar ? 'الكروت المنشأة - راجع قبل الطباعة' : 'Created cards'),
+                  Text(widget.ar ? 'الكروت الجاهزة' : 'Ready Cards'),
                   ..._created.map((c) => Padding(padding: const EdgeInsets.all(6), child: Text(c, style: const TextStyle(fontSize: 22, fontWeight: FontWeight.bold, letterSpacing: 2)))),
                 ],
               ),
@@ -546,7 +515,6 @@ class _HomeTabState extends State<HomeTab> {
   }
 }
 
-// ================= Cards - حقيقي =================
 class CardsTab extends StatefulWidget {
   final String host, user, pass;
   final bool ar;
@@ -575,7 +543,7 @@ class _CardsTabState extends State<CardsTab> {
       api.close();
       setState(() { _users = users; _active = active; });
     } catch (e) {
-      setState(() => _err = 'مش قادر أوصل للراوتر: $e');
+      setState(() => _err = 'تعذر الاتصال بالراوتر');
     }
     setState(() => _loading = false);
   }
@@ -621,7 +589,7 @@ class _CardsTabState extends State<CardsTab> {
           const SizedBox(height: 12),
           if (_loading) const CircularProgressIndicator(color: petrol),
           if (_err.isNotEmpty) Text(_err, style: const TextStyle(color: Colors.red)),
-          Text(widget.ar ? (_showActive ? 'المتصلين الآن - النشطين بس' : 'كل الكروت') : (_showActive ? 'Online Only' : 'All Cards'), style: const TextStyle(fontWeight: FontWeight.bold)),
+          Text(widget.ar ? (_showActive ? 'المتصلين الآن' : 'كل الكروت') : (_showActive ? 'Online Only' : 'All Cards'), style: const TextStyle(fontWeight: FontWeight.bold)),
           const SizedBox(height: 8),
           ...list.map((u) => Card(child: ListTile(title: Text(u['user'] ?? u['name'] ?? '', style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 18)), subtitle: Text(_showActive ? (widget.ar ? 'نشط' : 'Active') : (u['profile'] ?? '')), trailing: _showActive ? const Icon(Icons.circle, color: Colors.green, size: 12) : null))),
           TextButton.icon(onPressed: _refresh, icon: const Icon(Icons.refresh), label: Text(widget.ar ? 'تحديث' : 'Refresh')),
@@ -631,7 +599,6 @@ class _CardsTabState extends State<CardsTab> {
   }
 }
 
-// ================= Sales =================
 class SalesTab extends StatefulWidget {
   final bool ar;
   const SalesTab({super.key, required this.ar});
@@ -661,7 +628,7 @@ class _SalesTabState extends State<SalesTab> {
           crossAxisAlignment: CrossAxisAlignment.start,
           mainAxisSize: MainAxisSize.min,
           children: [
-            Text(widget.ar ? 'مبيعات النهاردة' : "Today's Sales", style: const TextStyle(fontSize: 18)),
+            Text(widget.ar ? 'مبيعات اليوم' : "Today's Sales", style: const TextStyle(fontSize: 18)),
             const SizedBox(height: 16),
             Text('$_sum ${widget.ar ? 'ج.م' : 'EGP'}', style: const TextStyle(fontSize: 36, fontWeight: FontWeight.bold, color: petrol)),
             Text('$_count ${widget.ar ? 'كارت' : 'cards'}'),
@@ -673,7 +640,6 @@ class _SalesTabState extends State<SalesTab> {
   }
 }
 
-// ================= Account =================
 class AccountTab extends StatefulWidget {
   const AccountTab({super.key});
   @override
@@ -693,9 +659,9 @@ class _AccountTabState extends State<AccountTab> {
     final v = await showDialog<String>(
       context: context,
       builder: (_) => AlertDialog(
-        title: const Text('اضافة مصروف'),
+        title: const Text('إضافة مصروف'),
         content: TextField(controller: c, keyboardType: TextInputType.number, decoration: const InputDecoration(hintText: 'المبلغ')),
-        actions: [TextButton(onPressed: () => Navigator.pop(context, c.text), child: const Text('اضافة'))],
+        actions: [TextButton(onPressed: () => Navigator.pop(context, c.text), child: const Text('إضافة'))],
       ),
     );
     if (v != null && v.isNotEmpty) {
@@ -722,7 +688,7 @@ class _AccountTabState extends State<AccountTab> {
             ),
           ),
           const SizedBox(height: 16),
-          SizedBox(width: double.infinity, height: 52, child: ElevatedButton(style: ElevatedButton.styleFrom(backgroundColor: petrol), onPressed: _addExp, child: const Text('اضافة مصروف'))),
+          SizedBox(width: double.infinity, height: 52, child: ElevatedButton(style: ElevatedButton.styleFrom(backgroundColor: petrol), onPressed: _addExp, child: const Text('إضافة مصروف'))),
           const SizedBox(height: 8),
           SizedBox(
             width: double.infinity,
